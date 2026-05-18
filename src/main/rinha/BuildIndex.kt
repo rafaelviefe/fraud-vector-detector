@@ -7,6 +7,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.GZIPInputStream
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 const val DIMENSIONS = 14
@@ -83,7 +84,7 @@ fun main() {
                     if (ch == ',' || ch.isWhitespace()) {
                         if (sb.isNotEmpty()) {
                             val f = sb.toString().toFloat()
-                            tempVector[dim] = if (f < 0f) -128 else (f * 127f).toInt().toByte()
+                            tempVector[dim] = if (f < 0f) -128 else (f * 127f).roundToInt().toByte()
                             dim++
                             sb.clear()
                         }
@@ -94,7 +95,7 @@ fun main() {
                 }
                 if (sb.isNotEmpty() && dim < DIMENSIONS) {
                     val f = sb.toString().toFloat()
-                    tempVector[dim] = if (f < 0f) -128 else (f * 127f).toInt().toByte()
+                    tempVector[dim] = if (f < 0f) -128 else (f * 127f).roundToInt().toByte()
                 }
                 hasVector = true
                 currentKey = ""
@@ -108,11 +109,11 @@ fun main() {
     val clusterSizes = IntArray(NUM_CLUSTERS)
     
     for (i in 0 until NUM_CLUSTERS) {
-        val randIdx = Random.nextInt(count)
+        val randIdx = Random(42).nextInt(count)
         System.arraycopy(vectors, randIdx * DIMENSIONS, centroids, i * DIMENSIONS, DIMENSIONS)
     }
     
-    for (iteration in 0 until 15) {
+    for (iteration in 0 until 20) {
         clusterSizes.fill(0)
         for (i in 0 until count) {
             var bestCluster = 0
