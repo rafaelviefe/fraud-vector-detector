@@ -17,7 +17,6 @@ import kotlin.math.roundToInt
 const val DIMENSIONS = 14
 const val VECTOR_SIZE = 15
 
-// Pre-baked HTTP responses for the 6 possible states (0/5 to 5/5 frauds)
 val RESPONSES = Array(6) { frauds ->
     val score = frauds / 5.0
     val approved = score < 0.6
@@ -28,8 +27,7 @@ val RESPONSES = Array(6) { frauds ->
 
 val HTTP_READY = ByteBuffer.wrap("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.US_ASCII))
 
-// Lookup table for MCC Risk
-val mccRiskMap = IntArray(10000) { 63 } // Default 0.5 * 127 = 63
+val mccRiskMap = IntArray(10000) { 63 }
 
 fun loadMccRisk() {
     val file = File("resources/mcc_risk.json")
@@ -45,10 +43,8 @@ fun loadMccRisk() {
 }
 
 fun main() {
-    // 1. Initialize Lookups
     loadMccRisk()
 
-    // 2. Map AOT Index into Memory
     val channel = RandomAccessFile("resources/index.bin", "r").channel
     val buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
     buffer.order(ByteOrder.LITTLE_ENDIAN)
@@ -68,12 +64,10 @@ fun main() {
     }
 
     val maxClusterSize = clusterSizes.maxOrNull() ?: 0
-    // Allocate enough for nprobe = 2 (two clusters combined)
     val clusterBuffer = ByteArray(maxClusterSize * VECTOR_SIZE * 2) 
     val queryVector = ByteArray(DIMENSIONS)
     val ioBuffer = ByteBuffer.allocateDirect(16384)
 
-    // 3. Bind Unix Domain Socket
     val socketPath = "/tmp/app.sock"
     val file = File(socketPath)
     if (file.exists()) file.delete()
@@ -81,7 +75,6 @@ fun main() {
     val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     serverChannel.bind(UnixDomainSocketAddress.of(socketPath))
 
-    // 4. Main Event Loop
     while (true) {
         val client: SocketChannel = serverChannel.accept()
         ioBuffer.clear()
@@ -89,7 +82,6 @@ fun main() {
         while (client.read(ioBuffer) > 0) {
             ioBuffer.flip()
             
-            // Extremely fast Router: GET /ready vs POST /fraud-score
             val firstByte = ioBuffer.get(0).toInt().toChar()
             if (firstByte == 'G') {
                 HTTP_READY.position(0)
@@ -107,11 +99,9 @@ fun main() {
             }
 
             if (bodyStart != -1) {
-                // Parse and Vectorize Payload dynamically
                 val payloadStr = Charsets.UTF_8.decode(ioBuffer.position(bodyStart)).toString()
                 vectorizePayload(payloadStr, queryVector)
 
-                // Search: multi-probe (nprobe = 2) for maximum accuracy at cluster boundaries
                 var bestCluster1 = 0; var minCentroidDist1 = Int.MAX_VALUE
                 var bestCluster2 = 0; var minCentroidDist2 = Int.MAX_VALUE
                 
@@ -130,7 +120,6 @@ fun main() {
                     }
                 }
 
-                // Load vectors from Top 2 Clusters into L1/L2 cache buffer
                 val size1 = clusterSizes[bestCluster1]
                 val offset1 = clusterOffsets[bestCluster1]
                 buffer.position(offset1)
@@ -143,7 +132,6 @@ fun main() {
 
                 val totalVectors = size1 + size2
 
-                // KNN Search using exact Euclidean over the restricted bounds
                 var top1Dist = Int.MAX_VALUE; var top1Label = 0
                 var top2Dist = Int.MAX_VALUE; var top2Label = 0
                 var top3Dist = Int.MAX_VALUE; var top3Label = 0
@@ -196,7 +184,6 @@ fun main() {
     }
 }
 
-// Low-Allocation JSON extraction and mathematical normalization (14 Dimensions)
 fun vectorizePayload(json: String, vector: ByteArray) {
     fun extractNum(key: String): Double {
         val idx = json.indexOf("\"$key\"")
@@ -226,9 +213,8 @@ fun vectorizePayload(json: String, vector: ByteArray) {
     val amount = extractNum("amount")
     val installments = extractNum("installments")
     val reqAtStr = extractStr("requested_at")
-    val avgAmount = extractNum("avg_amount") // Matches customer or merchant depending on context, careful. Let's do safely:
+    val avgAmount = extractNum("avg_amount")
 
-    // Safe contextual extraction
     val txBlock = json.substringAfter("\"transaction\"").substringBefore("}")
     val txAmount = txBlock.substringAfter("\"amount\":").substringBefore(",").trim().toDouble()
     val txInstalls = txBlock.substringAfter("\"installments\":").substringBefore(",").trim().toDouble()
@@ -252,7 +238,6 @@ fun vectorizePayload(json: String, vector: ByteArray) {
     val lBlock = json.substringAfter("\"last_transaction\"").substringBefore("}")
     val isLastTxNull = json.substringAfter("\"last_transaction\":").trim().startsWith("null")
 
-    // Date parsing
     val dtf = DateTimeFormatter.ISO_DATE_TIME
     val reqTime = LocalDateTime.parse(txReqAt, dtf)
     
@@ -263,8 +248,8 @@ fun vectorizePayload(json: String, vector: ByteArray) {
     vector[4] = clampToByte((reqTime.dayOfWeek.value - 1) / 6.0)
     
     if (isLastTxNull) {
-        vector[5] = -128 // sentinel -1
-        vector[6] = -128 // sentinel -1
+        vector[5] = -128
+        vector[6] = -128
     } else {
         val lTimeStr = lBlock.substringAfter("\"timestamp\":").substringAfter("\"").substringBefore("\"")
         val lKmStr = lBlock.substringAfter("\"km_from_current\":").substringBefore("}").trim().toDouble()
@@ -274,22 +259,15 @@ fun vectorizePayload(json: String, vector: ByteArray) {
         vector[6] = clampToByte(lKmStr / 1000.0)
     }
 
-    // Dim 7: km_from_home
     vector[7] = clampToByte(tKmHome / 1000.0)
-    // Dim 8: tx_count_24h
     vector[8] = clampToByte(cTxCount / 20.0)
-    // Dim 9: is_online
     vector[9] = if (tOnline) 127.toByte() else 0.toByte()
-    // Dim 10: card_present
     vector[10] = if (tCard) 127.toByte() else 0.toByte()
-    // Dim 11: unknown_merchant (1 if unknown, 0 if known)
     vector[11] = if (!cMerchants.contains(mId)) 127.toByte() else 0.toByte()
     
-    // Dim 12: mcc_risk
     val mccKey = mMcc.toIntOrNull() ?: 0
     vector[12] = if (mccKey in mccRiskMap.indices) mccRiskMap[mccKey].toByte() else 63.toByte()
 
-    // Dim 13: merchant_avg_amount
     vector[13] = clampToByte(mAvgAmount / 10000.0)
 }
 
