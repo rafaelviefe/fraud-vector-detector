@@ -32,7 +32,6 @@ val mccRiskMap = IntArray(10000) { 63 }
 fun loadMccRisk() {
     val file = File("resources/mcc_risk.json")
     if (!file.exists()) return
-    
     val content = file.readText()
     val pattern = "\"(\\d{4})\":\\s*([0-9.]+)".toRegex()
     pattern.findAll(content).forEach { matchResult ->
@@ -68,7 +67,7 @@ fun main() {
     val queryVector = ByteArray(DIMENSIONS)
     val ioBuffer = ByteBuffer.allocateDirect(16384)
 
-    val socketPath = "/tmp/app.sock"
+    val socketPath = System.getenv("SOCKET_PATH") ?: "/tmp/app.sock"
     val file = File(socketPath)
     if (file.exists()) file.delete()
 
@@ -185,36 +184,6 @@ fun main() {
 }
 
 fun vectorizePayload(json: String, vector: ByteArray) {
-    fun extractNum(key: String): Double {
-        val idx = json.indexOf("\"$key\"")
-        if (idx == -1) return -1.0
-        val start = json.indexOf(':', idx) + 1
-        var end = start
-        while (end < json.length && (json[end].isDigit() || json[end] == '.' || json[end] == '-')) end++
-        val numStr = json.substring(start, end).trim()
-        return numStr.toDoubleOrNull() ?: -1.0
-    }
-
-    fun extractStr(key: String): String {
-        val idx = json.indexOf("\"$key\"")
-        if (idx == -1) return ""
-        val start = json.indexOf('"', json.indexOf(':', idx)) + 1
-        val end = json.indexOf('"', start)
-        return json.substring(start, end)
-    }
-
-    fun extractBool(key: String): Boolean {
-        val idx = json.indexOf("\"$key\"")
-        if (idx == -1) return false
-        val start = json.indexOf(':', idx) + 1
-        return json.substring(start, start + 5).contains("true")
-    }
-
-    val amount = extractNum("amount")
-    val installments = extractNum("installments")
-    val reqAtStr = extractStr("requested_at")
-    val avgAmount = extractNum("avg_amount")
-
     val txBlock = json.substringAfter("\"transaction\"").substringBefore("}")
     val txAmount = txBlock.substringAfter("\"amount\":").substringBefore(",").trim().toDouble()
     val txInstalls = txBlock.substringAfter("\"installments\":").substringBefore(",").trim().toDouble()
@@ -248,8 +217,8 @@ fun vectorizePayload(json: String, vector: ByteArray) {
     vector[4] = clampToByte((reqTime.dayOfWeek.value - 1) / 6.0)
     
     if (isLastTxNull) {
-        vector[5] = -128
-        vector[6] = -128
+        vector[5] = -128 
+        vector[6] = -128 
     } else {
         val lTimeStr = lBlock.substringAfter("\"timestamp\":").substringAfter("\"").substringBefore("\"")
         val lKmStr = lBlock.substringAfter("\"km_from_current\":").substringBefore("}").trim().toDouble()
