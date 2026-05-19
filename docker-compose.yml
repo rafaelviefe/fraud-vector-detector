@@ -11,6 +11,8 @@ services:
     depends_on:
       - api1
       - api2
+    networks:
+      - rinha_network
     ulimits:
       nofile:
         soft: 65535
@@ -27,6 +29,8 @@ services:
       - SOCKET_PATH=/tmp/api1.sock
     volumes:
       - shared-sockets:/tmp
+    networks:
+      - rinha_network
     ulimits:
       nofile:
         soft: 65535
@@ -43,6 +47,8 @@ services:
       - SOCKET_PATH=/tmp/api2.sock
     volumes:
       - shared-sockets:/tmp
+    networks:
+      - rinha_network
     ulimits:
       nofile:
         soft: 65535
@@ -52,6 +58,10 @@ services:
         limits:
           cpus: "0.45"
           memory: "150M"
+
+networks:
+  rinha_network:
+    driver: bridge
 
 volumes:
   shared-sockets:
