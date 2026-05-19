@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   lb:
     image: haproxy:3.0-alpine

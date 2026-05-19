@@ -10,6 +10,7 @@ import java.util.zip.GZIPInputStream
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
+const val DIMENSIONS = 14
 const val NUM_CLUSTERS = 1024
 const val MAX_VECTORS = 3_000_000
 const val VECTOR_SIZE_BYTES = 15

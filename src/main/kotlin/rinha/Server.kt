@@ -14,7 +14,6 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
-const val DIMENSIONS = 14
 const val VECTOR_SIZE = 15
 
 val RESPONSES = Array(6) { frauds ->
