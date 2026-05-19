@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "1.9.23"
     id("org.graalvm.buildtools.native") version "0.9.28"
+    application
 }
 
 group = "rinha"
@@ -17,8 +18,17 @@ kotlin {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     kotlinOptions {
         jvmTarget = "21"
-        freeCompilerArgs = listOf("-O", "-Xopt-in=kotlin.RequiresOptIn")
+        freeCompilerArgs = listOf("-Xopt-in=kotlin.RequiresOptIn")
     }
+}
+
+application {
+    mainClass.set("rinha.ServerKt")
+}
+
+tasks.register<JavaExec>("buildIndex") {
+    mainClass.set("rinha.BuildIndexKt")
+    classpath = sourceSets["main"].runtimeClasspath
 }
 
 graalvmNative {

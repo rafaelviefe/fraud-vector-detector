@@ -3,6 +3,7 @@ version: '3.8'
 services:
   lb:
     image: haproxy:3.0-alpine
+    platform: linux/amd64
     ports:
       - "9999:9999"
     volumes:
@@ -25,6 +26,7 @@ services:
 
   api1:
     build: .
+    platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api1.sock
     volumes:
@@ -43,6 +45,7 @@ services:
 
   api2:
     build: .
+    platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api2.sock
     volumes:
