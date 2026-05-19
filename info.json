@@ -1,0 +1,11 @@
+{
+    "participants": ["Rafael Vieira Ferreira"],
+    "social": [
+        "https://github.com/rafaelviefe",
+        "https://www.linkedin.com/in/rafael-vieira-ferreira/",
+        "https://x.com/rafaelvieiradev"
+    ],
+    "source-code-repo": "https://github.com/rafaelviefe/fraud-vector-detector",
+    "stack": ["kotlin"],
+    "open_to_work": true
+}
