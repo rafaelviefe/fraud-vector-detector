@@ -1,45 +1,62 @@
 version: '3.8'
 
 services:
-  haproxy:
-    image: haproxy:2.8-alpine
+  lb:
+    image: haproxy:3.0-alpine
+    ports:
+      - "9999:9999"
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - shared-sockets:/tmp
-    ports:
-      - "9999:9999"
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: '50M'
     depends_on:
       - api1
       - api2
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "50M"
 
   api1:
     build: .
-    volumes:
-      - shared-sockets:/tmp
     environment:
       - SOCKET_PATH=/tmp/api1.sock
+    volumes:
+      - shared-sockets:/tmp
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     deploy:
       resources:
         limits:
-          cpus: '0.45'
-          memory: '150M'
+          cpus: "0.45"
+          memory: "150M"
 
   api2:
     build: .
-    volumes:
-      - shared-sockets:/tmp
     environment:
       - SOCKET_PATH=/tmp/api2.sock
+    volumes:
+      - shared-sockets:/tmp
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     deploy:
       resources:
         limits:
-          cpus: '0.45'
-          memory: '150M'
+          cpus: "0.45"
+          memory: "150M"
 
 volumes:
   shared-sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=10m
