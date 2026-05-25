@@ -78,13 +78,16 @@ fun main() {
         ioBuffer.clear()
         
         while (client.read(ioBuffer) > 0) {
+            val currentPos = ioBuffer.position()
             ioBuffer.flip()
             
-            val firstByte = ioBuffer.get(0).toInt().toChar()
-            if (firstByte == 'G') {
-                HTTP_READY.position(0)
-                client.write(HTTP_READY)
-                break
+            if (ioBuffer.limit() > 0) {
+                val firstByte = ioBuffer.get(0).toInt().toChar()
+                if (firstByte == 'G') {
+                    HTTP_READY.position(0)
+                    client.write(HTTP_READY)
+                    break
+                }
             }
 
             var bodyStart = -1
@@ -174,9 +177,11 @@ fun main() {
                 val responseBuffer = RESPONSES[frauds]
                 responseBuffer.position(0)
                 client.write(responseBuffer)
+                break 
+            } else {
+                ioBuffer.position(currentPos)
+                ioBuffer.limit(ioBuffer.capacity())
             }
-            ioBuffer.clear()
-            break
         }
         client.close()
     }

@@ -1,12 +1,14 @@
 services:
   lb:
     image: haproxy:3.0-alpine
+    user: "root"
     platform: linux/amd64
     ports:
       - "9999:9999"
     volumes:
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy.cfg:/haproxy_base.cfg:ro
       - shared-sockets:/tmp
+    command: /bin/sh -c "cat /haproxy_base.cfg > /tmp/haproxy_run.cfg && echo '' >> /tmp/haproxy_run.cfg && haproxy -f /tmp/haproxy_run.cfg"
     depends_on:
       - api1
       - api2
@@ -70,8 +72,3 @@ networks:
 
 volumes:
   shared-sockets:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: size=10m
