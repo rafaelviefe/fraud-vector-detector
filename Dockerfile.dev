@@ -1,16 +1,13 @@
 FROM --platform=linux/amd64 gradle:8.7-jdk21 AS builder
 WORKDIR /app
-
-COPY . .
-
+COPY build.gradle.kts settings.gradle.kts* ./
+COPY src ./src
 RUN --mount=type=cache,target=/home/gradle/.gradle gradle installDist --no-daemon
 RUN mv build/install/* /app/dist
 
 FROM --platform=linux/amd64 eclipse-temurin:21-jre-alpine
 WORKDIR /app
 COPY --from=builder /app/dist/lib /app/lib
-
-COPY --from=builder /app/resources/index.bin /app/resources/index.bin
-COPY --from=builder /app/resources/mcc_risk.json /app/resources/mcc_risk.json
-
-CMD ["java", "-cp", "/app/lib/*", "rinha.ServerKt"]
+COPY resources/index.bin /app/resources/index.bin
+COPY resources/mcc_risk.json /app/resources/mcc_risk.json
+CMD java -Xmx800m -XX:-UsePerfData -cp "/app/lib/*" rinha.ServerKt
