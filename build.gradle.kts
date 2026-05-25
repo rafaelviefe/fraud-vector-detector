@@ -29,6 +29,7 @@ application {
 tasks.register<JavaExec>("buildIndex") {
     mainClass.set("rinha.BuildIndexKt")
     classpath = sourceSets["main"].runtimeClasspath
+    jvmArgs = listOf("-Xms512m", "-Xmx2g", "-XX:+UseSerialGC")
 }
 
 graalvmNative {

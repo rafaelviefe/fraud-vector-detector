@@ -161,9 +161,13 @@ fun main() {
     buffer.order(ByteOrder.LITTLE_ENDIAN)
     
     buffer.putInt(NUM_CLUSTERS)
+    
     for (c in 0 until NUM_CLUSTERS) {
         buffer.put(centroids, c * DIMENSIONS, DIMENSIONS)
         buffer.putInt(clusterSizes[c])
+    }
+    
+    for (c in 0 until NUM_CLUSTERS) {
         for (i in 0 until count) {
             if (clusterAssignments[i] == c) {
                 buffer.put(vectors, i * DIMENSIONS, DIMENSIONS)
