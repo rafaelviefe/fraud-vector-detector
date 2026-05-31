@@ -10,4 +10,4 @@ WORKDIR /app
 COPY --from=builder /app/dist/lib /app/lib
 COPY resources/index.bin /app/resources/index.bin
 COPY resources/mcc_risk.json /app/resources/mcc_risk.json
-CMD java -Xmx800m -XX:-UsePerfData -cp "/app/lib/*" rinha.ServerKt
+CMD java -Xms130m -Xmx130m -XX:+UseSerialGC -XX:MaxMetaspaceSize=64m -XX:-UsePerfData -cp "/app/lib/*" rinha.ServerKt
