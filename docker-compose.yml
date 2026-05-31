@@ -23,7 +23,9 @@ services:
           memory: "30M"
 
   api1:
-    image: seu-usuario-dockerhub/api-rinha:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api1.sock
@@ -42,7 +44,9 @@ services:
           memory: "160M"
 
   api2:
-    image: seu-usuario-dockerhub/api-rinha:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api2.sock

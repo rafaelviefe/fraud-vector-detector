@@ -1,4 +1,30 @@
-api1:
+services:
+  lb:
+    image: haproxy:3.0-alpine
+    user: "root"
+    platform: linux/amd64
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/haproxy_base.cfg:ro
+      - shared-sockets:/tmp
+    command: /bin/sh -c "cat /haproxy_base.cfg > /tmp/haproxy_run.cfg && echo '' >> /tmp/haproxy_run.cfg && haproxy -f /tmp/haproxy_run.cfg"
+    depends_on:
+      - api1
+      - api2
+    networks:
+      - rinha_network
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "30M"
+
+  api1:
     build: 
       context: .
       dockerfile: Dockerfile.dev
@@ -19,23 +45,35 @@ api1:
           cpus: "0.6"
           memory: "350M"
 
-api2:
-  build: 
-    context: .
-    dockerfile: Dockerfile.dev
-  platform: linux/amd64
-  environment:
-    - SOCKET_PATH=/tmp/api2.sock
-  volumes:
-    - shared-sockets:/tmp
-  networks:
-    - rinha_network
-  ulimits:
-    nofile:
-      soft: 65535
-      hard: 65535
-  deploy:
-    resources:
-      limits:
-        cpus: "0.6"
-        memory: "350M"
+  api2:
+    build: 
+      context: .
+      dockerfile: Dockerfile.dev
+    platform: linux/amd64
+    environment:
+      - SOCKET_PATH=/tmp/api2.sock
+    volumes:
+      - shared-sockets:/tmp
+    networks:
+      - rinha_network
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.6"
+          memory: "350M"
+
+networks:
+  rinha_network:
+    driver: bridge
+
+volumes:
+  shared-sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=10m
