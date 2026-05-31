@@ -10,8 +10,10 @@ services:
       - shared-sockets:/tmp
     command: /bin/sh -c "cat /haproxy_base.cfg > /tmp/haproxy_run.cfg && echo '' >> /tmp/haproxy_run.cfg && haproxy -f /tmp/haproxy_run.cfg"
     depends_on:
-      - api1
-      - api2
+      api1:
+        condition: service_healthy
+      api2:
+        condition: service_healthy
     networks:
       - rinha_network
     ulimits:
@@ -35,6 +37,11 @@ services:
       - shared-sockets:/tmp
     networks:
       - rinha_network
+    healthcheck:
+      test: ["CMD", "test", "-S", "/tmp/api1.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     ulimits:
       nofile:
         soft: 65535
@@ -56,6 +63,11 @@ services:
       - shared-sockets:/tmp
     networks:
       - rinha_network
+    healthcheck:
+      test: ["CMD", "test", "-S", "/tmp/api2.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     ulimits:
       nofile:
         soft: 65535

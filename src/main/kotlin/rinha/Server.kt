@@ -71,7 +71,7 @@ fun main() {
     if (file.exists()) file.delete()
 
     val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
-    serverChannel.bind(UnixDomainSocketAddress.of(socketPath))
+    serverChannel.bind(UnixDomainSocketAddress.of(socketPath), 10000)
 
     while (true) {
         val client: SocketChannel = serverChannel.accept()

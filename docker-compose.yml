@@ -1,15 +1,19 @@
 services:
   lb:
     image: haproxy:3.0-alpine
+    user: "root"
     platform: linux/amd64
     ports:
       - "9999:9999"
     volumes:
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy.cfg:/haproxy_base.cfg:ro
       - shared-sockets:/tmp
+    command: /bin/sh -c "cat /haproxy_base.cfg > /tmp/haproxy_run.cfg && echo '' >> /tmp/haproxy_run.cfg && haproxy -f /tmp/haproxy_run.cfg"
     depends_on:
-      - api1
-      - api2
+      api1:
+        condition: service_healthy
+      api2:
+        condition: service_healthy
     networks:
       - rinha_network
     ulimits:
@@ -23,9 +27,9 @@ services:
           memory: "30M"
 
   api1:
-    build:
+    build: 
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api1.sock
@@ -33,6 +37,11 @@ services:
       - shared-sockets:/tmp
     networks:
       - rinha_network
+    healthcheck:
+      test: ["CMD", "test", "-S", "/tmp/api1.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     ulimits:
       nofile:
         soft: 65535
@@ -40,13 +49,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
-          memory: "160M"
+          cpus: "0.6"
+          memory: "350M"
 
   api2:
-    build:
+    build: 
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api2.sock
@@ -54,6 +63,11 @@ services:
       - shared-sockets:/tmp
     networks:
       - rinha_network
+    healthcheck:
+      test: ["CMD", "test", "-S", "/tmp/api2.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     ulimits:
       nofile:
         soft: 65535
@@ -61,8 +75,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.45"
-          memory: "160M"
+          cpus: "0.6"
+          memory: "350M"
 
 networks:
   rinha_network:
