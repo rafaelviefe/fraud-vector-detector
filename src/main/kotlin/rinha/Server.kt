@@ -7,22 +7,23 @@ import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
-import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 const val VECTOR_SIZE = 15
 
-val RESPONSES = Array(6) { frauds ->
+val RESPONSES_BUFFERS = Array(6) { frauds ->
     val score = frauds / 5.0
     val approved = score < 0.6
     val json = "{\"approved\":$approved,\"fraud_score\":$score}"
     val http = "HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nContent-Type: application/json\r\n\r\n$json"
-    http.toByteArray(Charsets.US_ASCII)
+    ByteBuffer.wrap(http.toByteArray(Charsets.US_ASCII))
 }
 
-val HTTP_READY = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.US_ASCII)
+val HTTP_READY_BUFFER = ByteBuffer.wrap("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.US_ASCII))
 
 val mccRiskMap = IntArray(10000) { 63 }
 
@@ -56,6 +57,13 @@ val BRACE_KEY = "{".toByteArray(Charsets.US_ASCII)
 val ARRAY_END = "]".toByteArray(Charsets.US_ASCII)
 
 val CUM_DAYS = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+
+class Connection {
+    val raw = ByteArray(16384)
+    val buffer: ByteBuffer = ByteBuffer.wrap(raw)
+    var pos = 0
+    var processOffset = 0
+}
 
 fun loadMccRisk() {
     val file = File("resources/mcc_risk.json")
@@ -106,92 +114,117 @@ fun main() {
     val file = File(socketPath)
     if (file.exists()) file.delete()
 
-    val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
-    serverChannel.bind(UnixDomainSocketAddress.of(socketPath), 10000)
+    val selector = Selector.open()
+    val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    
+    server.bind(UnixDomainSocketAddress.of(socketPath), 65535)
+    server.configureBlocking(false)
+    server.register(selector, SelectionKey.OP_ACCEPT)
 
-    val executor = Executors.newVirtualThreadPerTaskExecutor()
+    val queryVector = ByteArray(14)
 
     while (true) {
-        val client = serverChannel.accept()
-        executor.submit { handleClient(client) }
-    }
-}
+        selector.select()
+        val iter = selector.selectedKeys().iterator()
+        
+        while (iter.hasNext()) {
+            val key = iter.next()
+            iter.remove()
 
-fun handleClient(client: SocketChannel) {
-    val buffer = ByteArray(16384)
-    val ioBuffer = ByteBuffer.wrap(buffer)
-    val queryVector = ByteArray(14)
-    var pos = 0
-
-    try {
-        while (true) {
-            val read = client.read(ioBuffer)
-            if (read == -1) break
-            
-            var processOffset = 0
-            if (read == 0 && pos == buffer.size && processOffset == 0) break
-            if (read > 0) pos += read
-
-            while (true) {
-                var headerEnd = -1
-                for (i in processOffset until pos - 3) {
-                    if (buffer[i] == '\r'.code.toByte() && buffer[i + 1] == '\n'.code.toByte() &&
-                        buffer[i + 2] == '\r'.code.toByte() && buffer[i + 3] == '\n'.code.toByte()
-                    ) {
-                        headerEnd = i + 4
-                        break
+            if (key.isAcceptable) {
+                while (true) {
+                    val client = server.accept() ?: break
+                    client.configureBlocking(false)
+                    client.register(selector, SelectionKey.OP_READ, Connection())
+                }
+            } else if (key.isReadable) {
+                val client = key.channel() as SocketChannel
+                val conn = key.attachment() as Connection
+                
+                try {
+                    val read = client.read(conn.buffer)
+                    if (read == -1) {
+                        client.close()
+                        continue
                     }
-                }
+                    if (read == 0 && conn.pos == conn.raw.size && conn.processOffset == 0) {
+                        client.close()
+                        continue
+                    }
+                    if (read > 0) conn.pos += read
 
-                if (headerEnd == -1) break
+                    while (true) {
+                        var headerEnd = -1
+                        for (i in conn.processOffset until conn.pos - 3) {
+                            if (conn.raw[i] == 13.toByte() && conn.raw[i + 1] == 10.toByte() &&
+                                conn.raw[i + 2] == 13.toByte() && conn.raw[i + 3] == 10.toByte()) {
+                                headerEnd = i + 4
+                                break
+                            }
+                        }
 
-                if (buffer[processOffset] == 'G'.code.toByte()) {
-                    client.write(ByteBuffer.wrap(HTTP_READY))
-                    processOffset = headerEnd
-                    continue
-                }
+                        if (headerEnd == -1) break
 
-                var contentLength = -1
-                var idx = processOffset
-                while (idx < headerEnd - 15) {
-                    if ((buffer[idx].toInt() or 0x20) == 'c'.code &&
-                        (buffer[idx + 1].toInt() or 0x20) == 'o'.code &&
-                        buffer[idx + 14].toInt() == ':'.code
-                    ) {
-                        idx += 15
-                        while (idx < headerEnd && buffer[idx] <= 32.toByte()) idx++
-                        contentLength = 0
-                        while (idx < headerEnd && buffer[idx] in '0'.code.toByte()..'9'.code.toByte()) {
-                            contentLength = contentLength * 10 + (buffer[idx] - '0'.code.toByte())
+                        if (conn.raw[conn.processOffset] == 'G'.code.toByte()) {
+                            HTTP_READY_BUFFER.clear()
+                            var spins = 0
+                            while (HTTP_READY_BUFFER.hasRemaining()) {
+                                val w = client.write(HTTP_READY_BUFFER)
+                                if (w < 0) { client.close(); break }
+                                if (w == 0) { spins++; if (spins > 100) { client.close(); break }; Thread.yield() }
+                            }
+                            conn.processOffset = headerEnd
+                            continue
+                        }
+
+                        var contentLength = 0
+                        var idx = conn.processOffset
+                        while (idx < headerEnd - 15) {
+                            if ((conn.raw[idx].toInt() or 0x20) == 'c'.code &&
+                                (conn.raw[idx + 1].toInt() or 0x20) == 'o'.code &&
+                                conn.raw[idx + 14].toInt() == ':'.code) {
+                                idx += 15
+                                while (idx < headerEnd && conn.raw[idx] <= 32.toByte()) idx++
+                                while (idx < headerEnd && conn.raw[idx] in '0'.code.toByte()..'9'.code.toByte()) {
+                                    contentLength = contentLength * 10 + (conn.raw[idx] - '0'.code.toByte())
+                                    idx++
+                                }
+                                break
+                            }
                             idx++
                         }
-                        break
+
+                        val requestEnd = headerEnd + contentLength
+                        if (conn.pos < requestEnd) break
+
+                        val frauds = processPayload(conn.raw, headerEnd, requestEnd, queryVector)
+                        
+                        val respBuffer = RESPONSES_BUFFERS[frauds]
+                        respBuffer.clear()
+                        var spins = 0
+                        while (respBuffer.hasRemaining()) {
+                            val w = client.write(respBuffer)
+                            if (w < 0) { client.close(); break }
+                            if (w == 0) { spins++; if (spins > 100) { client.close(); break }; Thread.yield() }
+                        }
+
+                        conn.processOffset = requestEnd
                     }
-                    idx++
+
+                    if (conn.processOffset > 0) {
+                        val remaining = conn.pos - conn.processOffset
+                        if (remaining > 0) {
+                            System.arraycopy(conn.raw, conn.processOffset, conn.raw, 0, remaining)
+                        }
+                        conn.pos = remaining
+                        conn.processOffset = 0
+                        conn.buffer.position(conn.pos)
+                    }
+                } catch (e: Exception) {
+                    try { client.close() } catch (ex: Exception) {}
                 }
-
-                if (contentLength == -1) contentLength = 0
-                val requestEnd = headerEnd + contentLength
-                if (pos < requestEnd) break
-
-                val frauds = processPayload(buffer, headerEnd, requestEnd, queryVector)
-                client.write(ByteBuffer.wrap(RESPONSES[frauds]))
-
-                processOffset = requestEnd
-            }
-
-            if (processOffset > 0) {
-                val remaining = pos - processOffset
-                if (remaining > 0) {
-                    System.arraycopy(buffer, processOffset, buffer, 0, remaining)
-                }
-                pos = remaining
-                ioBuffer.position(pos)
             }
         }
-    } catch (e: Exception) {
-    } finally {
-        try { client.close() } catch (e: Exception) {}
     }
 }
 
@@ -276,14 +309,14 @@ fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray):
             d = q2 - indexData[vOff + 2].toInt(); dist += d * d
             d = q3 - indexData[vOff + 3].toInt(); dist += d * d
             
-            if (dist < top5Dist) {
+            if (dist <= top5Dist) {
                 d = q4 - indexData[vOff + 4].toInt(); dist += d * d
                 d = q5 - indexData[vOff + 5].toInt(); dist += d * d
                 d = q6 - indexData[vOff + 6].toInt(); dist += d * d
                 d = q7 - indexData[vOff + 7].toInt(); dist += d * d
-                d = q8 - indexData[vOff + 8].toInt(); dist += d * d
                 
-                if (dist < top5Dist) {
+                if (dist <= top5Dist) {
+                    d = q8 - indexData[vOff + 8].toInt(); dist += d * d
                     d = q9 - indexData[vOff + 9].toInt(); dist += d * d
                     d = q10 - indexData[vOff + 10].toInt(); dist += d * d
                     d = q11 - indexData[vOff + 11].toInt(); dist += d * d
