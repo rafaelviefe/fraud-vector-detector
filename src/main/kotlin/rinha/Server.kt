@@ -13,16 +13,6 @@ import kotlin.math.roundToInt
 
 const val VECTOR_SIZE = 15
 
-val RESPONSES_BUFFERS = Array(6) { frauds ->
-    val score = frauds / 5.0
-    val approved = score < 0.6
-    val json = "{\"approved\":$approved,\"fraud_score\":$score}"
-    val http = "HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nContent-Type: application/json\r\n\r\n$json"
-    ByteBuffer.wrap(http.toByteArray(Charsets.US_ASCII))
-}
-
-val HTTP_READY_BUFFER = ByteBuffer.wrap("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.US_ASCII))
-
 val mccRiskMap = IntArray(10000) { 63 }
 
 var totalClusters = 0
@@ -118,6 +108,15 @@ class ConnectionWorker(private val client: SocketChannel) : Runnable {
     private val raw = ByteArray(65536)
     private val buffer = ByteBuffer.wrap(raw)
     private val query = ByteArray(14)
+    
+    private val readyBuffer = ByteBuffer.wrap("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.US_ASCII))
+    private val responseBuffers = Array(6) { frauds ->
+        val score = frauds / 5.0
+        val approved = score < 0.6
+        val json = "{\"approved\":$approved,\"fraud_score\":$score}"
+        val http = "HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nContent-Type: application/json\r\n\r\n$json"
+        ByteBuffer.wrap(http.toByteArray(Charsets.US_ASCII))
+    }
 
     private var t1D = Int.MAX_VALUE; private var t1L = 0
     private var t2D = Int.MAX_VALUE; private var t2L = 0
@@ -153,8 +152,10 @@ class ConnectionWorker(private val client: SocketChannel) : Runnable {
                     if (headerEnd == -1) break
 
                     if (raw[processOffset] == 'G'.code.toByte()) {
-                        HTTP_READY_BUFFER.clear()
-                        while (HTTP_READY_BUFFER.hasRemaining()) client.write(HTTP_READY_BUFFER)
+                        readyBuffer.clear()
+                        while (readyBuffer.hasRemaining()) {
+                            if (client.write(readyBuffer) <= 0) break
+                        }
                         processOffset = headerEnd
                         continue
                     }
@@ -181,9 +182,11 @@ class ConnectionWorker(private val client: SocketChannel) : Runnable {
 
                     val frauds = processPayload(raw, headerEnd, requestEnd)
                     
-                    val respBuffer = RESPONSES_BUFFERS[frauds]
+                    val respBuffer = responseBuffers[frauds]
                     respBuffer.clear()
-                    while (respBuffer.hasRemaining()) client.write(respBuffer)
+                    while (respBuffer.hasRemaining()) {
+                        if (client.write(respBuffer) <= 0) break
+                    }
 
                     processOffset = requestEnd
                 }
