@@ -26,11 +26,36 @@ val HTTP_READY = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".toByteArray(Char
 
 val mccRiskMap = IntArray(10000) { 63 }
 
-lateinit var MAPPED_BUFFER: ByteBuffer
 var totalClusters = 0
+lateinit var indexData: ByteArray
 lateinit var centroids: ByteArray
 lateinit var clusterSizes: IntArray
 lateinit var clusterOffsets: IntArray
+
+val TX_KEY = "\"transaction\"".toByteArray(Charsets.US_ASCII)
+val CUST_KEY = "\"customer\"".toByteArray(Charsets.US_ASCII)
+val MERCH_KEY = "\"merchant\"".toByteArray(Charsets.US_ASCII)
+val TERM_KEY = "\"terminal\"".toByteArray(Charsets.US_ASCII)
+val LAST_TX_KEY = "\"last_transaction\"".toByteArray(Charsets.US_ASCII)
+
+val AMT_KEY = "\"amount\":".toByteArray(Charsets.US_ASCII)
+val INST_KEY = "\"installments\":".toByteArray(Charsets.US_ASCII)
+val REQ_AT_KEY = "\"requested_at\":".toByteArray(Charsets.US_ASCII)
+val AVG_AMT_KEY = "\"avg_amount\":".toByteArray(Charsets.US_ASCII)
+val TX_COUNT_KEY = "\"tx_count_24h\":".toByteArray(Charsets.US_ASCII)
+val ID_KEY = "\"id\":".toByteArray(Charsets.US_ASCII)
+val MCC_KEY = "\"mcc\":".toByteArray(Charsets.US_ASCII)
+val ONLINE_KEY = "\"is_online\":".toByteArray(Charsets.US_ASCII)
+val CARD_KEY = "\"card_present\":".toByteArray(Charsets.US_ASCII)
+val KM_HOME_KEY = "\"km_from_home\":".toByteArray(Charsets.US_ASCII)
+val TIMESTAMP_KEY = "\"timestamp\":".toByteArray(Charsets.US_ASCII)
+val KM_CURR_KEY = "\"km_from_current\":".toByteArray(Charsets.US_ASCII)
+val KNOWN_MERCH_KEY = "\"known_merchants\":".toByteArray(Charsets.US_ASCII)
+val NULL_KEY = "null".toByteArray(Charsets.US_ASCII)
+val BRACE_KEY = "{".toByteArray(Charsets.US_ASCII)
+val ARRAY_END = "]".toByteArray(Charsets.US_ASCII)
+
+val CUM_DAYS = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
 
 fun loadMccRisk() {
     val file = File("resources/mcc_risk.json")
@@ -48,21 +73,33 @@ fun main() {
     loadMccRisk()
 
     val channel = RandomAccessFile("resources/index.bin", "r").channel
-    MAPPED_BUFFER = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
-    MAPPED_BUFFER.order(ByteOrder.LITTLE_ENDIAN)
+    val fileSize = channel.size().toInt()
+    val mapped = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
+    mapped.order(ByteOrder.LITTLE_ENDIAN)
 
-    totalClusters = MAPPED_BUFFER.int
-    centroids = ByteArray(totalClusters * DIMENSIONS)
+    indexData = ByteArray(fileSize)
+    mapped.get(indexData)
+
+    var offset = 0
+    totalClusters = ByteBuffer.wrap(indexData, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+    offset += 4
+
+    centroids = ByteArray(totalClusters * 14)
     clusterSizes = IntArray(totalClusters)
     clusterOffsets = IntArray(totalClusters)
 
-    var currentOffset = 4 + totalClusters * (DIMENSIONS + 4)
     for (c in 0 until totalClusters) {
-        MAPPED_BUFFER.get(centroids, c * DIMENSIONS, DIMENSIONS)
-        val size = MAPPED_BUFFER.int
+        System.arraycopy(indexData, offset, centroids, c * 14, 14)
+        offset += 14
+        val size = ByteBuffer.wrap(indexData, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        offset += 4
         clusterSizes[c] = size
+    }
+
+    var currentOffset = offset
+    for (c in 0 until totalClusters) {
         clusterOffsets[c] = currentOffset
-        currentOffset += size * VECTOR_SIZE
+        currentOffset += clusterSizes[c] * VECTOR_SIZE
     }
 
     val socketPath = System.getenv("SOCKET_PATH") ?: "/tmp/app.sock"
@@ -81,158 +118,278 @@ fun main() {
 }
 
 fun handleClient(client: SocketChannel) {
-    try {
-        val ioBuffer = ByteBuffer.allocate(8192)
-        val jsonArray = ioBuffer.array()
-        var bodyStart = -1
-        var contentLength = -1
+    val buffer = ByteArray(16384)
+    val ioBuffer = ByteBuffer.wrap(buffer)
+    val queryVector = ByteArray(14)
+    var pos = 0
 
+    try {
         while (true) {
             val read = client.read(ioBuffer)
-            if (read == -1) return
+            if (read == -1) break
+            
+            var processOffset = 0
+            if (read == 0 && pos == buffer.size && processOffset == 0) break
+            if (read > 0) pos += read
 
-            val pos = ioBuffer.position()
-            if (pos > 0 && jsonArray[0] == 'G'.code.toByte()) {
-                client.write(ByteBuffer.wrap(HTTP_READY))
-                return
-            }
-
-            if (bodyStart == -1) {
-                for (i in 0 until pos - 3) {
-                    if (jsonArray[i] == '\r'.code.toByte() && jsonArray[i + 1] == '\n'.code.toByte() &&
-                        jsonArray[i + 2] == '\r'.code.toByte() && jsonArray[i + 3] == '\n'.code.toByte()
+            while (true) {
+                var headerEnd = -1
+                for (i in processOffset until pos - 3) {
+                    if (buffer[i] == '\r'.code.toByte() && buffer[i + 1] == '\n'.code.toByte() &&
+                        buffer[i + 2] == '\r'.code.toByte() && buffer[i + 3] == '\n'.code.toByte()
                     ) {
-                        bodyStart = i + 4
-                        val headerStr = String(jsonArray, 0, bodyStart, Charsets.US_ASCII).lowercase()
-                        val clIdx = headerStr.indexOf("content-length:")
-                        if (clIdx != -1) {
-                            val end = headerStr.indexOf('\r', clIdx)
-                            contentLength = headerStr.substring(clIdx + 15, end).trim().toInt()
-                        }
+                        headerEnd = i + 4
                         break
                     }
                 }
+
+                if (headerEnd == -1) break
+
+                if (buffer[processOffset] == 'G'.code.toByte()) {
+                    client.write(ByteBuffer.wrap(HTTP_READY))
+                    processOffset = headerEnd
+                    continue
+                }
+
+                var contentLength = -1
+                var idx = processOffset
+                while (idx < headerEnd - 15) {
+                    if ((buffer[idx].toInt() or 0x20) == 'c'.code &&
+                        (buffer[idx + 1].toInt() or 0x20) == 'o'.code &&
+                        buffer[idx + 14].toInt() == ':'.code
+                    ) {
+                        idx += 15
+                        while (idx < headerEnd && buffer[idx] <= 32.toByte()) idx++
+                        contentLength = 0
+                        while (idx < headerEnd && buffer[idx] in '0'.code.toByte()..'9'.code.toByte()) {
+                            contentLength = contentLength * 10 + (buffer[idx] - '0'.code.toByte())
+                            idx++
+                        }
+                        break
+                    }
+                    idx++
+                }
+
+                if (contentLength == -1) contentLength = 0
+                val requestEnd = headerEnd + contentLength
+                if (pos < requestEnd) break
+
+                val frauds = processPayload(buffer, headerEnd, requestEnd, queryVector)
+                client.write(ByteBuffer.wrap(RESPONSES[frauds]))
+
+                processOffset = requestEnd
             }
 
-            if (bodyStart != -1 && contentLength != -1) {
-                if (pos >= bodyStart + contentLength) {
-                    break
+            if (processOffset > 0) {
+                val remaining = pos - processOffset
+                if (remaining > 0) {
+                    System.arraycopy(buffer, processOffset, buffer, 0, remaining)
                 }
+                pos = remaining
+                ioBuffer.position(pos)
             }
         }
-
-        val limit = bodyStart + contentLength
-        val queryVector = ByteArray(DIMENSIONS)
-        vectorizePayload(jsonArray, bodyStart, limit, queryVector)
-
-        var bestCluster1 = 0
-        var minCentroidDist1 = Int.MAX_VALUE
-        var bestCluster2 = 0
-        var minCentroidDist2 = Int.MAX_VALUE
-
-        for (c in 0 until totalClusters) {
-            var dist = 0
-            val cOff = c * DIMENSIONS
-            for (d in 0 until DIMENSIONS) {
-                val diff = queryVector[d].toInt() - centroids[cOff + d].toInt()
-                dist += diff * diff
-            }
-            if (dist < minCentroidDist1) {
-                minCentroidDist2 = minCentroidDist1
-                bestCluster2 = bestCluster1
-                minCentroidDist1 = dist
-                bestCluster1 = c
-            } else if (dist < minCentroidDist2) {
-                minCentroidDist2 = dist
-                bestCluster2 = c
-            }
-        }
-
-        var top1Dist = Int.MAX_VALUE; var top1Label = 0
-        var top2Dist = Int.MAX_VALUE; var top2Label = 0
-        var top3Dist = Int.MAX_VALUE; var top3Label = 0
-        var top4Dist = Int.MAX_VALUE; var top4Label = 0
-        var top5Dist = Int.MAX_VALUE; var top5Label = 0
-
-        fun scanCluster(c: Int) {
-            val size = clusterSizes[c]
-            val offset = clusterOffsets[c]
-            for (i in 0 until size) {
-                var dist = 0
-                val vOff = offset + i * VECTOR_SIZE
-                for (d in 0 until DIMENSIONS) {
-                    val diff = queryVector[d].toInt() - MAPPED_BUFFER.get(vOff + d).toInt()
-                    dist += diff * diff
-                }
-                val label = MAPPED_BUFFER.get(vOff + DIMENSIONS).toInt()
-
-                if (dist < top1Dist) {
-                    top5Dist = top4Dist; top5Label = top4Label
-                    top4Dist = top3Dist; top4Label = top3Label
-                    top3Dist = top2Dist; top3Label = top2Label
-                    top2Dist = top1Dist; top2Label = top1Label
-                    top1Dist = dist; top1Label = label
-                } else if (dist < top2Dist) {
-                    top5Dist = top4Dist; top5Label = top4Label
-                    top4Dist = top3Dist; top4Label = top3Label
-                    top3Dist = top2Dist; top3Label = top2Label
-                    top2Dist = dist; top2Label = label
-                } else if (dist < top3Dist) {
-                    top5Dist = top4Dist; top5Label = top4Label
-                    top4Dist = top3Dist; top4Label = top3Label
-                    top3Dist = dist; top3Label = label
-                } else if (dist < top4Dist) {
-                    top5Dist = top4Dist; top5Label = top4Label
-                    top4Dist = dist; top4Label = label
-                } else if (dist < top5Dist) {
-                    top5Dist = dist; top5Label = label
-                }
-            }
-        }
-
-        scanCluster(bestCluster1)
-        scanCluster(bestCluster2)
-
-        val frauds = top1Label + top2Label + top3Label + top4Label + top5Label
-        client.write(ByteBuffer.wrap(RESPONSES[frauds]))
-
     } catch (e: Exception) {
     } finally {
         try { client.close() } catch (e: Exception) {}
     }
 }
 
+fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray): Int {
+    vectorizePayload(buffer, start, limit, query)
+
+    val q0 = query[0].toInt(); val q1 = query[1].toInt(); val q2 = query[2].toInt(); val q3 = query[3].toInt()
+    val q4 = query[4].toInt(); val q5 = query[5].toInt(); val q6 = query[6].toInt(); val q7 = query[7].toInt()
+    val q8 = query[8].toInt(); val q9 = query[9].toInt(); val q10 = query[10].toInt(); val q11 = query[11].toInt()
+    val q12 = query[12].toInt(); val q13 = query[13].toInt()
+
+    var bc0 = 0; var bd0 = Int.MAX_VALUE
+    var bc1 = 0; var bd1 = Int.MAX_VALUE
+    var bc2 = 0; var bd2 = Int.MAX_VALUE
+    var bc3 = 0; var bd3 = Int.MAX_VALUE
+    var bc4 = 0; var bd4 = Int.MAX_VALUE
+
+    for (c in 0 until totalClusters) {
+        var dist = 0
+        val cOff = c * 14
+        
+        var d = q0 - centroids[cOff].toInt(); dist += d * d
+        d = q1 - centroids[cOff + 1].toInt(); dist += d * d
+        d = q2 - centroids[cOff + 2].toInt(); dist += d * d
+        d = q3 - centroids[cOff + 3].toInt(); dist += d * d
+        d = q4 - centroids[cOff + 4].toInt(); dist += d * d
+        d = q5 - centroids[cOff + 5].toInt(); dist += d * d
+        d = q6 - centroids[cOff + 6].toInt(); dist += d * d
+        d = q7 - centroids[cOff + 7].toInt(); dist += d * d
+        d = q8 - centroids[cOff + 8].toInt(); dist += d * d
+        d = q9 - centroids[cOff + 9].toInt(); dist += d * d
+        d = q10 - centroids[cOff + 10].toInt(); dist += d * d
+        d = q11 - centroids[cOff + 11].toInt(); dist += d * d
+        d = q12 - centroids[cOff + 12].toInt(); dist += d * d
+        d = q13 - centroids[cOff + 13].toInt(); dist += d * d
+
+        if (dist < bd4) {
+            if (dist < bd3) {
+                if (dist < bd2) {
+                    if (dist < bd1) {
+                        if (dist < bd0) {
+                            bd4 = bd3; bc4 = bc3
+                            bd3 = bd2; bc3 = bc2
+                            bd2 = bd1; bc2 = bc1
+                            bd1 = bd0; bc1 = bc0
+                            bd0 = dist; bc0 = c
+                        } else {
+                            bd4 = bd3; bc4 = bc3
+                            bd3 = bd2; bc3 = bc2
+                            bd2 = bd1; bc2 = bc1
+                            bd1 = dist; bc1 = c
+                        }
+                    } else {
+                        bd4 = bd3; bc4 = bc3
+                        bd3 = bd2; bc3 = bc2
+                        bd2 = dist; bc2 = c
+                    }
+                } else {
+                    bd4 = bd3; bc4 = bc3
+                    bd3 = dist; bc3 = c
+                }
+            } else {
+                bd4 = dist; bc4 = c
+            }
+        }
+    }
+
+    var top1Dist = Int.MAX_VALUE; var top1Label = 0
+    var top2Dist = Int.MAX_VALUE; var top2Label = 0
+    var top3Dist = Int.MAX_VALUE; var top3Label = 0
+    var top4Dist = Int.MAX_VALUE; var top4Label = 0
+    var top5Dist = Int.MAX_VALUE; var top5Label = 0
+
+    fun scanCluster(c: Int) {
+        val size = clusterSizes[c]
+        var vOff = clusterOffsets[c]
+        for (i in 0 until size) {
+            var dist = 0
+            
+            var d = q0 - indexData[vOff].toInt(); dist += d * d
+            d = q1 - indexData[vOff + 1].toInt(); dist += d * d
+            d = q2 - indexData[vOff + 2].toInt(); dist += d * d
+            d = q3 - indexData[vOff + 3].toInt(); dist += d * d
+            
+            if (dist < top5Dist) {
+                d = q4 - indexData[vOff + 4].toInt(); dist += d * d
+                d = q5 - indexData[vOff + 5].toInt(); dist += d * d
+                d = q6 - indexData[vOff + 6].toInt(); dist += d * d
+                d = q7 - indexData[vOff + 7].toInt(); dist += d * d
+                d = q8 - indexData[vOff + 8].toInt(); dist += d * d
+                
+                if (dist < top5Dist) {
+                    d = q9 - indexData[vOff + 9].toInt(); dist += d * d
+                    d = q10 - indexData[vOff + 10].toInt(); dist += d * d
+                    d = q11 - indexData[vOff + 11].toInt(); dist += d * d
+                    d = q12 - indexData[vOff + 12].toInt(); dist += d * d
+                    d = q13 - indexData[vOff + 13].toInt(); dist += d * d
+                    
+                    if (dist < top5Dist) {
+                        val label = indexData[vOff + 14].toInt()
+                        
+                        if (dist < top4Dist) {
+                            if (dist < top3Dist) {
+                                if (dist < top2Dist) {
+                                    if (dist < top1Dist) {
+                                        top5Dist = top4Dist; top5Label = top4Label
+                                        top4Dist = top3Dist; top4Label = top3Label
+                                        top3Dist = top2Dist; top3Label = top2Label
+                                        top2Dist = top1Dist; top2Label = top1Label
+                                        top1Dist = dist; top1Label = label
+                                    } else {
+                                        top5Dist = top4Dist; top5Label = top4Label
+                                        top4Dist = top3Dist; top4Label = top3Label
+                                        top3Dist = top2Dist; top3Label = top2Label
+                                        top2Dist = dist; top2Label = label
+                                    }
+                                } else {
+                                    top5Dist = top4Dist; top5Label = top4Label
+                                    top4Dist = top3Dist; top4Label = top3Label
+                                    top3Dist = dist; top3Label = label
+                                }
+                            } else {
+                                top5Dist = top4Dist; top5Label = top4Label
+                                top4Dist = dist; top4Label = label
+                            }
+                        } else {
+                            top5Dist = dist; top5Label = label
+                        }
+                    }
+                }
+            }
+            vOff += 15
+        }
+    }
+
+    scanCluster(bc0)
+    scanCluster(bc1)
+    scanCluster(bc2)
+    scanCluster(bc3)
+    scanCluster(bc4)
+
+    return top1Label + top2Label + top3Label + top4Label + top5Label
+}
+
 fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray) {
-    val txBlock = findBlock(json, "\"transaction\"", start, limit)
-    val cBlock = findBlock(json, "\"customer\"", start, limit)
-    val mBlock = findBlock(json, "\"merchant\"", start, limit)
-    val tBlock = findBlock(json, "\"terminal\"", start, limit)
-    val lBlock = findBlock(json, "\"last_transaction\"", start, limit)
+    val txBlock = find(json, TX_KEY, start, limit)
+    val cBlock = find(json, CUST_KEY, start, limit)
+    val mBlock = find(json, MERCH_KEY, start, limit)
+    val tBlock = find(json, TERM_KEY, start, limit)
+    val lBlock = find(json, LAST_TX_KEY, start, limit)
 
-    val txAmount = parseDouble(json, txBlock, limit, "\"amount\":")
-    val txInstalls = parseDouble(json, txBlock, limit, "\"installments\":")
-    
-    val reqTimeStr = parseString(json, txBlock, limit, "\"requested_at\":")
-    val reqY = reqTimeStr.substring(0, 4).toInt()
-    val reqM = reqTimeStr.substring(5, 7).toInt()
-    val reqD = reqTimeStr.substring(8, 10).toInt()
-    val reqH = reqTimeStr.substring(11, 13).toInt()
-    val reqMin = reqTimeStr.substring(14, 16).toInt()
+    val txAmount = parseDouble(json, AMT_KEY, txBlock, limit)
+    val txInstalls = parseDouble(json, INST_KEY, txBlock, limit)
+
+    val reqIdx = find(json, REQ_AT_KEY, txBlock, limit)
+    var iReq = reqIdx + REQ_AT_KEY.size
+    while (iReq < limit && (json[iReq] <= 32.toByte() || json[iReq] == '"'.code.toByte())) iReq++
+    val reqY = (json[iReq] - 48) * 1000 + (json[iReq + 1] - 48) * 100 + (json[iReq + 2] - 48) * 10 + (json[iReq + 3] - 48)
+    val reqM = (json[iReq + 5] - 48) * 10 + (json[iReq + 6] - 48)
+    val reqD = (json[iReq + 8] - 48) * 10 + (json[iReq + 9] - 48)
+    val reqH = (json[iReq + 11] - 48) * 10 + (json[iReq + 12] - 48)
+    val reqMin = (json[iReq + 14] - 48) * 10 + (json[iReq + 15] - 48)
     val reqDow = getDayOfWeek(reqY, reqM, reqD)
+    val reqEpoch = getEpochMinutes(reqY, reqM, reqD, reqH, reqMin)
 
-    val cAvgAmount = parseDouble(json, cBlock, limit, "\"avg_amount\":")
-    val cTxCount = parseDouble(json, cBlock, limit, "\"tx_count_24h\":")
+    val cAvgAmount = parseDouble(json, AVG_AMT_KEY, cBlock, limit)
+    val cTxCount = parseDouble(json, TX_COUNT_KEY, cBlock, limit)
 
-    val mId = parseString(json, mBlock, limit, "\"id\":")
-    val mMcc = parseString(json, mBlock, limit, "\"mcc\":").toIntOrNull() ?: 0
-    val mAvgAmount = parseDouble(json, mBlock, limit, "\"avg_amount\":")
+    var mIdS = -1
+    var mIdE = -1
+    val mIdIdx = find(json, ID_KEY, mBlock, limit)
+    if (mIdIdx != -1) {
+        var i = mIdIdx + ID_KEY.size
+        while (i < limit && (json[i] <= 32.toByte() || json[i] == '"'.code.toByte())) i++
+        mIdS = i
+        while (i < limit && json[i] != '"'.code.toByte()) i++
+        mIdE = i
+    }
+    val mIdLen = mIdE - mIdS
 
-    val tOnline = parseBool(json, tBlock, limit, "\"is_online\":")
-    val tCard = parseBool(json, tBlock, limit, "\"card_present\":")
-    val tKmHome = parseDouble(json, tBlock, limit, "\"km_from_home\":")
+    val mccIdx = find(json, MCC_KEY, mBlock, limit)
+    var mMcc = 0
+    if (mccIdx != -1) {
+        var i = mccIdx + MCC_KEY.size
+        while (i < limit && (json[i] <= 32.toByte() || json[i] == '"'.code.toByte())) i++
+        while (i < limit && json[i] in '0'.code.toByte()..'9'.code.toByte()) {
+            mMcc = mMcc * 10 + (json[i] - '0'.code.toByte())
+            i++
+        }
+    }
+    val mAvgAmount = parseDouble(json, AVG_AMT_KEY, mBlock, limit)
 
-    val lNullIdx = findBlock(json, "null", lBlock, limit)
-    val lBraceIdx = findBlock(json, "{", lBlock, limit)
+    val tOnline = parseBool(json, ONLINE_KEY, tBlock, limit)
+    val tCard = parseBool(json, CARD_KEY, tBlock, limit)
+    val tKmHome = parseDouble(json, KM_HOME_KEY, tBlock, limit)
+
+    val lNullIdx = find(json, NULL_KEY, lBlock, limit)
+    val lBraceIdx = find(json, BRACE_KEY, lBlock, limit)
     val isLastTxNull = (lNullIdx != -1 && (lBraceIdx == -1 || lNullIdx < lBraceIdx))
 
     vector[0] = clampToByte(txAmount / 10000.0)
@@ -245,15 +402,16 @@ fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray)
         vector[5] = -128
         vector[6] = -128
     } else {
-        val lTimeStr = parseString(json, lBlock, limit, "\"timestamp\":")
-        val lKmStr = parseDouble(json, lBlock, limit, "\"km_from_current\":")
-        val lY = lTimeStr.substring(0, 4).toInt()
-        val lM = lTimeStr.substring(5, 7).toInt()
-        val lD = lTimeStr.substring(8, 10).toInt()
-        val lH = lTimeStr.substring(11, 13).toInt()
-        val lMin = lTimeStr.substring(14, 16).toInt()
-
-        val reqEpoch = getEpochMinutes(reqY, reqM, reqD, reqH, reqMin)
+        val lTimeIdx = find(json, TIMESTAMP_KEY, lBlock, limit)
+        var iL = lTimeIdx + TIMESTAMP_KEY.size
+        while (iL < limit && (json[iL] <= 32.toByte() || json[iL] == '"'.code.toByte())) iL++
+        val lY = (json[iL] - 48) * 1000 + (json[iL + 1] - 48) * 100 + (json[iL + 2] - 48) * 10 + (json[iL + 3] - 48)
+        val lM = (json[iL + 5] - 48) * 10 + (json[iL + 6] - 48)
+        val lD = (json[iL + 8] - 48) * 10 + (json[iL + 9] - 48)
+        val lH = (json[iL + 11] - 48) * 10 + (json[iL + 12] - 48)
+        val lMin = (json[iL + 14] - 48) * 10 + (json[iL + 15] - 48)
+        
+        val lKmStr = parseDouble(json, KM_CURR_KEY, lBlock, limit)
         val lEpoch = getEpochMinutes(lY, lM, lD, lH, lMin)
         val minutesDiff = (reqEpoch - lEpoch).toDouble()
 
@@ -265,32 +423,65 @@ fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray)
     vector[8] = clampToByte(cTxCount / 20.0)
     vector[9] = if (tOnline) 127.toByte() else 0.toByte()
     vector[10] = if (tCard) 127.toByte() else 0.toByte()
-    vector[11] = if (!containsMerchant(json, cBlock, limit, "\"known_merchants\":", mId)) 127.toByte() else 0.toByte()
+
+    var unknown = true
+    val kIdx = find(json, KNOWN_MERCH_KEY, cBlock, limit)
+    if (kIdx != -1) {
+        val endIdx = find(json, ARRAY_END, kIdx, limit)
+        if (endIdx != -1 && mIdS != -1) {
+            var curr = kIdx
+            while (curr <= endIdx - mIdLen) {
+                if (json[curr] == json[mIdS]) {
+                    var match = true
+                    for (j in 1 until mIdLen) {
+                        if (json[curr + j] != json[mIdS + j]) {
+                            match = false
+                            break
+                        }
+                    }
+                    if (match && json[curr + mIdLen] == '"'.code.toByte()) {
+                        unknown = false
+                        break
+                    }
+                }
+                curr++
+            }
+        }
+    }
+    vector[11] = if (unknown) 127.toByte() else 0.toByte()
 
     vector[12] = if (mMcc in mccRiskMap.indices) mccRiskMap[mMcc].toByte() else 63.toByte()
     vector[13] = clampToByte(mAvgAmount / 10000.0)
 }
 
-fun findBlock(json: ByteArray, key: String, start: Int, limit: Int): Int {
-    if (start == -1) return -1
-    val keyBytes = key.toByteArray()
-    for (i in start..limit - keyBytes.size) {
-        var match = true
-        for (j in keyBytes.indices) {
-            if (json[i + j] != keyBytes[j]) { match = false; break }
+fun find(buf: ByteArray, key: ByteArray, start: Int, limit: Int): Int {
+    if (start < 0) return -1
+    val first = key[0]
+    val max = limit - key.size
+    var i = start
+    while (i <= max) {
+        if (buf[i] == first) {
+            var match = true
+            for (j in 1 until key.size) {
+                if (buf[i + j] != key[j]) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
         }
-        if (match) return i
+        i++
     }
     return -1
 }
 
-fun parseDouble(json: ByteArray, blockStart: Int, limit: Int, key: String): Double {
-    val kIdx = findBlock(json, key, blockStart, limit)
+fun parseDouble(json: ByteArray, key: ByteArray, start: Int, limit: Int): Double {
+    val kIdx = find(json, key, start, limit)
     if (kIdx == -1) return 0.0
-    var i = kIdx + key.length
-    while (i < limit && json[i] == ' '.code.toByte()) i++
+    var i = kIdx + key.size
+    while (i < limit && (json[i] <= 32.toByte() || json[i] == ':'.code.toByte() || json[i] == '"'.code.toByte())) i++
     var isNegative = false
-    if (json[i] == '-'.code.toByte()) { isNegative = true; i++ }
+    if (i < limit && json[i] == '-'.code.toByte()) { isNegative = true; i++ }
     var intPart = 0.0
     while (i < limit && json[i] in '0'.code.toByte()..'9'.code.toByte()) {
         intPart = intPart * 10 + (json[i] - '0'.code.toByte())
@@ -310,41 +501,16 @@ fun parseDouble(json: ByteArray, blockStart: Int, limit: Int, key: String): Doub
     return if (isNegative) -intPart else intPart
 }
 
-fun parseString(json: ByteArray, blockStart: Int, limit: Int, key: String): String {
-    val kIdx = findBlock(json, key, blockStart, limit)
-    if (kIdx == -1) return ""
-    var i = kIdx + key.length
-    while (i < limit && json[i] == ' '.code.toByte()) i++
-    if (json[i] == '"'.code.toByte()) i++
-    val start = i
-    while (i < limit && json[i] != '"'.code.toByte()) i++
-    return String(json, start, i - start, Charsets.US_ASCII)
-}
-
-fun parseBool(json: ByteArray, blockStart: Int, limit: Int, key: String): Boolean {
-    val kIdx = findBlock(json, key, blockStart, limit)
+fun parseBool(json: ByteArray, key: ByteArray, start: Int, limit: Int): Boolean {
+    val kIdx = find(json, key, start, limit)
     if (kIdx == -1) return false
-    var i = kIdx + key.length
-    while (i < limit && json[i] == ' '.code.toByte()) i++
+    var i = kIdx + key.size
+    while (i < limit && (json[i] <= 32.toByte() || json[i] == ':'.code.toByte())) i++
     return json[i] == 't'.code.toByte()
 }
 
-fun containsMerchant(json: ByteArray, blockStart: Int, limit: Int, key: String, mId: String): Boolean {
-    val kIdx = findBlock(json, key, blockStart, limit)
-    if (kIdx == -1) return false
-    val i = kIdx + key.length
-    val endIdx = findBlock(json, "]", i, limit)
-    if (endIdx == -1) return false
-    return findBlock(json, mId, i, endIdx) != -1
-}
-
 fun clampToByte(value: Double): Byte {
-    val clamped = when {
-        value.isNaN() -> 0.0
-        value < 0.0 -> 0.0
-        value > 1.0 -> 1.0
-        else -> value
-    }
+    val clamped = if (value != value) 0.0 else if (value < 0.0) 0.0 else if (value > 1.0) 1.0 else value
     return (clamped * 127.0).roundToInt().toByte()
 }
 
@@ -356,15 +522,15 @@ fun getDayOfWeek(year: Int, month: Int, day: Int): Int {
     val j = y / 100
     val f = day + (13 * (m + 1)) / 5 + k + (k / 4) + (j / 4) - 2 * j
     val dow = f % 7
-    return (dow + 5) % 7
+    return (if (dow < 0) dow + 7 else dow + 5) % 7
 }
 
 fun getEpochMinutes(year: Int, month: Int, day: Int, hour: Int, min: Int): Long {
-    var days = day.toLong() - 1
-    for (i in 1970 until year) {
-        days += if ((i % 4 == 0 && i % 100 != 0) || (i % 400 == 0)) 366 else 365
+    var days = (year - 1970) * 365 + (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400
+    days += CUM_DAYS[month - 1]
+    if (month > 2 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) {
+        days += 1
     }
-    val dim = intArrayOf(31, if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    for (i in 0 until month - 1) days += dim[i]
+    days += day - 1
     return days * 1440L + hour * 60L + min
 }
