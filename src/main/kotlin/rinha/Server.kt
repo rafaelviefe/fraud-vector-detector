@@ -96,7 +96,7 @@ fun main() {
     if (file.exists()) file.delete()
 
     val server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
-    server.bind(UnixDomainSocketAddress.of(socketPath))
+    server.bind(UnixDomainSocketAddress.of(socketPath), 65535)
 
     while (true) {
         val client = server.accept()
@@ -129,15 +129,21 @@ class ConnectionWorker(private val client: SocketChannel) : Runnable {
         var processOffset = 0
         try {
             while (true) {
+                if (processOffset > 0) {
+                    val remaining = pos - processOffset
+                    if (remaining > 0) {
+                        System.arraycopy(raw, processOffset, raw, 0, remaining)
+                    }
+                    pos = remaining
+                    processOffset = 0
+                }
+
+                if (pos == raw.size) break
+
                 buffer.position(pos)
                 buffer.limit(raw.size)
                 val read = client.read(buffer)
                 if (read == -1) break
-                if (read == 0) {
-                    if (pos == raw.size && processOffset == 0) break
-                    Thread.yield()
-                    continue
-                }
                 pos += read
 
                 while (true) {
@@ -189,15 +195,6 @@ class ConnectionWorker(private val client: SocketChannel) : Runnable {
                     }
 
                     processOffset = requestEnd
-                }
-
-                if (processOffset > 0) {
-                    val remaining = pos - processOffset
-                    if (remaining > 0) {
-                        System.arraycopy(raw, processOffset, raw, 0, remaining)
-                    }
-                    pos = remaining
-                    processOffset = 0
                 }
             }
         } catch (e: Exception) {
