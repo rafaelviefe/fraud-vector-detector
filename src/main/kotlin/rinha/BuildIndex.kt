@@ -12,7 +12,7 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 const val DIMENSIONS = 14
-const val NUM_CLUSTERS = 4096
+const val NUM_CLUSTERS = 2048
 const val MAX_VECTORS = 3_000_000
 const val VECTOR_SIZE_BYTES = 15
 
