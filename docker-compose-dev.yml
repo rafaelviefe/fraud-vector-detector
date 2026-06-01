@@ -16,15 +16,6 @@ services:
         condition: service_healthy
     networks:
       - rinha_network
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-    deploy:
-      resources:
-        limits:
-          cpus: "0.1"
-          memory: "30M"
 
   api1:
     build: 
@@ -42,15 +33,6 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-    deploy:
-      resources:
-        limits:
-          cpus: "1.2"
-          memory: "512M"
 
   api2:
     build: 
@@ -68,15 +50,6 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-    deploy:
-      resources:
-        limits:
-          cpus: "1.2"
-          memory: "512M"
 
 networks:
   rinha_network:
