@@ -58,8 +58,17 @@ val ARRAY_END = "]".toByteArray(Charsets.US_ASCII)
 
 val CUM_DAYS = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
 
+var gQ0 = 0; var gQ1 = 0; var gQ2 = 0; var gQ3 = 0; var gQ4 = 0; var gQ5 = 0; var gQ6 = 0; var gQ7 = 0
+var gQ8 = 0; var gQ9 = 0; var gQ10 = 0; var gQ11 = 0; var gQ12 = 0; var gQ13 = 0
+
+var t1D = Int.MAX_VALUE; var t1L = 0
+var t2D = Int.MAX_VALUE; var t2L = 0
+var t3D = Int.MAX_VALUE; var t3L = 0
+var t4D = Int.MAX_VALUE; var t4L = 0
+var t5D = Int.MAX_VALUE; var t5L = 0
+
 class Connection {
-    val raw = ByteArray(16384)
+    val raw = ByteArray(4096)
     val buffer: ByteBuffer = ByteBuffer.wrap(raw)
     var pos = 0
     var processOffset = 0
@@ -171,7 +180,7 @@ fun main() {
                             while (HTTP_READY_BUFFER.hasRemaining()) {
                                 val w = client.write(HTTP_READY_BUFFER)
                                 if (w < 0) { client.close(); break }
-                                if (w == 0) { spins++; if (spins > 100) { client.close(); break }; Thread.yield() }
+                                if (w == 0) { spins++; if (spins > 10) { client.close(); break }; Thread.yield() }
                             }
                             conn.processOffset = headerEnd
                             continue
@@ -205,7 +214,7 @@ fun main() {
                         while (respBuffer.hasRemaining()) {
                             val w = client.write(respBuffer)
                             if (w < 0) { client.close(); break }
-                            if (w == 0) { spins++; if (spins > 100) { client.close(); break }; Thread.yield() }
+                            if (w == 0) { spins++; if (spins > 10) { client.close(); break }; Thread.yield() }
                         }
 
                         conn.processOffset = requestEnd
@@ -228,145 +237,126 @@ fun main() {
     }
 }
 
+fun scanCluster(c: Int) {
+    val size = clusterSizes[c]
+    var vOff = clusterOffsets[c]
+    for (i in 0 until size) {
+        var dist = 0
+        
+        var d = gQ0 - indexData[vOff].toInt(); dist += d * d
+        d = gQ1 - indexData[vOff + 1].toInt(); dist += d * d
+        d = gQ2 - indexData[vOff + 2].toInt(); dist += d * d
+        d = gQ3 - indexData[vOff + 3].toInt(); dist += d * d
+        
+        if (dist <= t5D) {
+            d = gQ4 - indexData[vOff + 4].toInt(); dist += d * d
+            d = gQ5 - indexData[vOff + 5].toInt(); dist += d * d
+            d = gQ6 - indexData[vOff + 6].toInt(); dist += d * d
+            d = gQ7 - indexData[vOff + 7].toInt(); dist += d * d
+            
+            if (dist <= t5D) {
+                d = gQ8 - indexData[vOff + 8].toInt(); dist += d * d
+                d = gQ9 - indexData[vOff + 9].toInt(); dist += d * d
+                d = gQ10 - indexData[vOff + 10].toInt(); dist += d * d
+                d = gQ11 - indexData[vOff + 11].toInt(); dist += d * d
+                d = gQ12 - indexData[vOff + 12].toInt(); dist += d * d
+                d = gQ13 - indexData[vOff + 13].toInt(); dist += d * d
+                
+                if (dist < t5D) {
+                    val label = indexData[vOff + 14].toInt()
+                    
+                    if (dist < t4D) {
+                        if (dist < t3D) {
+                            if (dist < t2D) {
+                                if (dist < t1D) {
+                                    t5D = t4D; t5L = t4L
+                                    t4D = t3D; t4L = t3L
+                                    t3D = t2D; t3L = t2L
+                                    t2D = t1D; t2L = t1L
+                                    t1D = dist; t1L = label
+                                } else {
+                                    t5D = t4D; t5L = t4L
+                                    t4D = t3D; t4L = t3L
+                                    t3D = t2D; t3L = t2L
+                                    t2D = dist; t2L = label
+                                }
+                            } else {
+                                t5D = t4D; t5L = t4L
+                                t4D = t3D; t4L = t3L
+                                t3D = dist; t3L = label
+                            }
+                        } else {
+                            t5D = t4D; t5L = t4L
+                            t4D = dist; t4L = label
+                        }
+                    } else {
+                        t5D = dist; t5L = label
+                    }
+                }
+            }
+        }
+        vOff += 15
+    }
+}
+
 fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray): Int {
     vectorizePayload(buffer, start, limit, query)
 
-    val q0 = query[0].toInt(); val q1 = query[1].toInt(); val q2 = query[2].toInt(); val q3 = query[3].toInt()
-    val q4 = query[4].toInt(); val q5 = query[5].toInt(); val q6 = query[6].toInt(); val q7 = query[7].toInt()
-    val q8 = query[8].toInt(); val q9 = query[9].toInt(); val q10 = query[10].toInt(); val q11 = query[11].toInt()
-    val q12 = query[12].toInt(); val q13 = query[13].toInt()
+    gQ0 = query[0].toInt(); gQ1 = query[1].toInt(); gQ2 = query[2].toInt(); gQ3 = query[3].toInt()
+    gQ4 = query[4].toInt(); gQ5 = query[5].toInt(); gQ6 = query[6].toInt(); gQ7 = query[7].toInt()
+    gQ8 = query[8].toInt(); gQ9 = query[9].toInt(); gQ10 = query[10].toInt(); gQ11 = query[11].toInt()
+    gQ12 = query[12].toInt(); gQ13 = query[13].toInt()
+
+    t1D = Int.MAX_VALUE; t1L = 0
+    t2D = Int.MAX_VALUE; t2L = 0
+    t3D = Int.MAX_VALUE; t3L = 0
+    t4D = Int.MAX_VALUE; t4L = 0
+    t5D = Int.MAX_VALUE; t5L = 0
 
     var bc0 = 0; var bd0 = Int.MAX_VALUE
     var bc1 = 0; var bd1 = Int.MAX_VALUE
     var bc2 = 0; var bd2 = Int.MAX_VALUE
-    var bc3 = 0; var bd3 = Int.MAX_VALUE
-    var bc4 = 0; var bd4 = Int.MAX_VALUE
 
     for (c in 0 until totalClusters) {
         var dist = 0
         val cOff = c * 14
         
-        var d = q0 - centroids[cOff].toInt(); dist += d * d
-        d = q1 - centroids[cOff + 1].toInt(); dist += d * d
-        d = q2 - centroids[cOff + 2].toInt(); dist += d * d
-        d = q3 - centroids[cOff + 3].toInt(); dist += d * d
-        d = q4 - centroids[cOff + 4].toInt(); dist += d * d
-        d = q5 - centroids[cOff + 5].toInt(); dist += d * d
-        d = q6 - centroids[cOff + 6].toInt(); dist += d * d
-        d = q7 - centroids[cOff + 7].toInt(); dist += d * d
-        d = q8 - centroids[cOff + 8].toInt(); dist += d * d
-        d = q9 - centroids[cOff + 9].toInt(); dist += d * d
-        d = q10 - centroids[cOff + 10].toInt(); dist += d * d
-        d = q11 - centroids[cOff + 11].toInt(); dist += d * d
-        d = q12 - centroids[cOff + 12].toInt(); dist += d * d
-        d = q13 - centroids[cOff + 13].toInt(); dist += d * d
+        var d = gQ0 - centroids[cOff].toInt(); dist += d * d
+        d = gQ1 - centroids[cOff + 1].toInt(); dist += d * d
+        d = gQ2 - centroids[cOff + 2].toInt(); dist += d * d
+        d = gQ3 - centroids[cOff + 3].toInt(); dist += d * d
+        d = gQ4 - centroids[cOff + 4].toInt(); dist += d * d
+        d = gQ5 - centroids[cOff + 5].toInt(); dist += d * d
+        d = gQ6 - centroids[cOff + 6].toInt(); dist += d * d
+        d = gQ7 - centroids[cOff + 7].toInt(); dist += d * d
+        d = gQ8 - centroids[cOff + 8].toInt(); dist += d * d
+        d = gQ9 - centroids[cOff + 9].toInt(); dist += d * d
+        d = gQ10 - centroids[cOff + 10].toInt(); dist += d * d
+        d = gQ11 - centroids[cOff + 11].toInt(); dist += d * d
+        d = gQ12 - centroids[cOff + 12].toInt(); dist += d * d
+        d = gQ13 - centroids[cOff + 13].toInt(); dist += d * d
 
-        if (dist < bd4) {
-            if (dist < bd3) {
-                if (dist < bd2) {
-                    if (dist < bd1) {
-                        if (dist < bd0) {
-                            bd4 = bd3; bc4 = bc3
-                            bd3 = bd2; bc3 = bc2
-                            bd2 = bd1; bc2 = bc1
-                            bd1 = bd0; bc1 = bc0
-                            bd0 = dist; bc0 = c
-                        } else {
-                            bd4 = bd3; bc4 = bc3
-                            bd3 = bd2; bc3 = bc2
-                            bd2 = bd1; bc2 = bc1
-                            bd1 = dist; bc1 = c
-                        }
-                    } else {
-                        bd4 = bd3; bc4 = bc3
-                        bd3 = bd2; bc3 = bc2
-                        bd2 = dist; bc2 = c
-                    }
+        if (dist < bd2) {
+            if (dist < bd1) {
+                if (dist < bd0) {
+                    bd2 = bd1; bc2 = bc1
+                    bd1 = bd0; bc1 = bc0
+                    bd0 = dist; bc0 = c
                 } else {
-                    bd4 = bd3; bc4 = bc3
-                    bd3 = dist; bc3 = c
+                    bd2 = bd1; bc2 = bc1
+                    bd1 = dist; bc1 = c
                 }
             } else {
-                bd4 = dist; bc4 = c
+                bd2 = dist; bc2 = c
             }
-        }
-    }
-
-    var top1Dist = Int.MAX_VALUE; var top1Label = 0
-    var top2Dist = Int.MAX_VALUE; var top2Label = 0
-    var top3Dist = Int.MAX_VALUE; var top3Label = 0
-    var top4Dist = Int.MAX_VALUE; var top4Label = 0
-    var top5Dist = Int.MAX_VALUE; var top5Label = 0
-
-    fun scanCluster(c: Int) {
-        val size = clusterSizes[c]
-        var vOff = clusterOffsets[c]
-        for (i in 0 until size) {
-            var dist = 0
-            
-            var d = q0 - indexData[vOff].toInt(); dist += d * d
-            d = q1 - indexData[vOff + 1].toInt(); dist += d * d
-            d = q2 - indexData[vOff + 2].toInt(); dist += d * d
-            d = q3 - indexData[vOff + 3].toInt(); dist += d * d
-            
-            if (dist <= top5Dist) {
-                d = q4 - indexData[vOff + 4].toInt(); dist += d * d
-                d = q5 - indexData[vOff + 5].toInt(); dist += d * d
-                d = q6 - indexData[vOff + 6].toInt(); dist += d * d
-                d = q7 - indexData[vOff + 7].toInt(); dist += d * d
-                
-                if (dist <= top5Dist) {
-                    d = q8 - indexData[vOff + 8].toInt(); dist += d * d
-                    d = q9 - indexData[vOff + 9].toInt(); dist += d * d
-                    d = q10 - indexData[vOff + 10].toInt(); dist += d * d
-                    d = q11 - indexData[vOff + 11].toInt(); dist += d * d
-                    d = q12 - indexData[vOff + 12].toInt(); dist += d * d
-                    d = q13 - indexData[vOff + 13].toInt(); dist += d * d
-                    
-                    if (dist < top5Dist) {
-                        val label = indexData[vOff + 14].toInt()
-                        
-                        if (dist < top4Dist) {
-                            if (dist < top3Dist) {
-                                if (dist < top2Dist) {
-                                    if (dist < top1Dist) {
-                                        top5Dist = top4Dist; top5Label = top4Label
-                                        top4Dist = top3Dist; top4Label = top3Label
-                                        top3Dist = top2Dist; top3Label = top2Label
-                                        top2Dist = top1Dist; top2Label = top1Label
-                                        top1Dist = dist; top1Label = label
-                                    } else {
-                                        top5Dist = top4Dist; top5Label = top4Label
-                                        top4Dist = top3Dist; top4Label = top3Label
-                                        top3Dist = top2Dist; top3Label = top2Label
-                                        top2Dist = dist; top2Label = label
-                                    }
-                                } else {
-                                    top5Dist = top4Dist; top5Label = top4Label
-                                    top4Dist = top3Dist; top4Label = top3Label
-                                    top3Dist = dist; top3Label = label
-                                }
-                            } else {
-                                top5Dist = top4Dist; top5Label = top4Label
-                                top4Dist = dist; top4Label = label
-                            }
-                        } else {
-                            top5Dist = dist; top5Label = label
-                        }
-                    }
-                }
-            }
-            vOff += 15
         }
     }
 
     scanCluster(bc0)
     scanCluster(bc1)
     scanCluster(bc2)
-    scanCluster(bc3)
-    scanCluster(bc4)
 
-    return top1Label + top2Label + top3Label + top4Label + top5Label
+    return t1L + t2L + t3L + t4L + t5L
 }
 
 fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray) {
@@ -544,7 +534,7 @@ fun parseBool(json: ByteArray, key: ByteArray, start: Int, limit: Int): Boolean 
 
 fun clampToByte(value: Double): Byte {
     val clamped = if (value != value) 0.0 else if (value < 0.0) 0.0 else if (value > 1.0) 1.0 else value
-    return (clamped * 127.0).roundToInt().toByte()
+    return (clamped * 127.0 + 0.5).toInt().toByte()
 }
 
 fun getDayOfWeek(year: Int, month: Int, day: Int): Int {
