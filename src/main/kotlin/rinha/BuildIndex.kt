@@ -135,6 +135,7 @@ fun main() {
     val centroids = ByteArray(NUM_CLUSTERS * DIMENSIONS)
     val clusterAssignments = IntArray(count)
     val clusterSizes = IntArray(NUM_CLUSTERS)
+    val newCentroidsSum = IntArray(NUM_CLUSTERS * DIMENSIONS)
     
     for (i in 0 until NUM_CLUSTERS) {
         val randIdx = Random(42).nextInt(count)
@@ -163,7 +164,8 @@ fun main() {
         }
         
         clusterSizes.fill(0)
-        val newCentroidsSum = IntArray(NUM_CLUSTERS * DIMENSIONS)
+        newCentroidsSum.fill(0)
+        
         for (i in 0 until count) {
             val c = clusterAssignments[i]
             clusterSizes[c]++
