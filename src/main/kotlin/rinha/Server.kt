@@ -68,7 +68,7 @@ var t4D = Int.MAX_VALUE; var t4L = 0
 var t5D = Int.MAX_VALUE; var t5L = 0
 
 class Connection {
-    val raw = ByteArray(4096)
+    val raw = ByteArray(65536)
     val buffer: ByteBuffer = ByteBuffer.wrap(raw)
     var pos = 0
     var processOffset = 0
@@ -316,6 +316,7 @@ fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray):
     var bc0 = 0; var bd0 = Int.MAX_VALUE
     var bc1 = 0; var bd1 = Int.MAX_VALUE
     var bc2 = 0; var bd2 = Int.MAX_VALUE
+    var bc3 = 0; var bd3 = Int.MAX_VALUE
 
     for (c in 0 until totalClusters) {
         var dist = 0
@@ -336,18 +337,25 @@ fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray):
         d = gQ12 - centroids[cOff + 12].toInt(); dist += d * d
         d = gQ13 - centroids[cOff + 13].toInt(); dist += d * d
 
-        if (dist < bd2) {
-            if (dist < bd1) {
-                if (dist < bd0) {
-                    bd2 = bd1; bc2 = bc1
-                    bd1 = bd0; bc1 = bc0
-                    bd0 = dist; bc0 = c
+        if (dist < bd3) {
+            if (dist < bd2) {
+                if (dist < bd1) {
+                    if (dist < bd0) {
+                        bd3 = bd2; bc3 = bc2
+                        bd2 = bd1; bc2 = bc1
+                        bd1 = bd0; bc1 = bc0
+                        bd0 = dist; bc0 = c
+                    } else {
+                        bd3 = bd2; bc3 = bc2
+                        bd2 = bd1; bc2 = bc1
+                        bd1 = dist; bc1 = c
+                    }
                 } else {
-                    bd2 = bd1; bc2 = bc1
-                    bd1 = dist; bc1 = c
+                    bd3 = bd2; bc3 = bc2
+                    bd2 = dist; bc2 = c
                 }
             } else {
-                bd2 = dist; bc2 = c
+                bd3 = dist; bc3 = c
             }
         }
     }
@@ -355,6 +363,7 @@ fun processPayload(buffer: ByteArray, start: Int, limit: Int, query: ByteArray):
     scanCluster(bc0)
     scanCluster(bc1)
     scanCluster(bc2)
+    scanCluster(bc3)
 
     return t1L + t2L + t3L + t4L + t5L
 }
@@ -454,7 +463,7 @@ fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray)
         if (endIdx != -1 && mIdS != -1) {
             var curr = kIdx
             while (curr <= endIdx - mIdLen) {
-                if (json[curr] == json[mIdS]) {
+                if (json[curr] == json[mIdS] && json[curr - 1] == '"'.code.toByte()) {
                     var match = true
                     for (j in 1 until mIdLen) {
                         if (json[curr + j] != json[mIdS + j]) {
