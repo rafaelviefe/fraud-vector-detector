@@ -1,10 +1,9 @@
 FROM --platform=linux/amd64 ghcr.io/graalvm/native-image-community:21-muslib AS builder
 WORKDIR /app
 COPY . .
-RUN microdnf install -y findutils || apk add --no-cache findutils || apt-get update && apt-get install -y findutils
+RUN microdnf install -y findutils
 RUN chmod +x gradlew
 RUN ./gradlew nativeCompile --no-daemon
-
 FROM --platform=linux/amd64 alpine:latest
 WORKDIR /app
 COPY --from=builder /app/build/native/nativeCompile/server /app/server

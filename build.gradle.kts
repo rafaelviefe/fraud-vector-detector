@@ -42,6 +42,7 @@ graalvmNative {
                 "-march=x86-64-v3",
                 "--gc=epsilon",
                 "--no-fallback",
+                "--static",
                 "-H:+ReportExceptionStackTraces",
                 "-H:+UnlockExperimentalVMOptions"
             )

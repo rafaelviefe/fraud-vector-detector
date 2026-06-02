@@ -29,7 +29,7 @@ services:
   api1:
     build: 
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api1.sock
@@ -55,7 +55,7 @@ services:
   api2:
     build: 
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api2.sock
