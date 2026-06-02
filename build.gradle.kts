@@ -33,6 +33,9 @@ tasks.register<JavaExec>("buildIndex") {
 }
 
 graalvmNative {
+    agent {
+        defaultMode.set("standard")
+    }
     binaries {
         named("main") {
             imageName.set("server")
