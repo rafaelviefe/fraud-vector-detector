@@ -1,34 +1,29 @@
 package rinha
 
-import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.GZIPInputStream
-import java.util.stream.IntStream
-import kotlin.math.roundToInt
 import kotlin.random.Random
 
 const val DIMENSIONS = 14
-const val NUM_CLUSTERS = 2048
 const val MAX_VECTORS = 3_000_000
-const val VECTOR_SIZE_BYTES = 15
 
 fun main() {
     val inputFile = File("resources/references.json.gz")
     val outputFile = File("resources/index.bin")
 
-    val vectors = ByteArray(MAX_VECTORS * DIMENSIONS)
+    val vectorsShort = ShortArray(MAX_VECTORS * DIMENSIONS)
     val labels = ByteArray(MAX_VECTORS)
+    val indices = IntArray(MAX_VECTORS)
 
     var count = 0
 
     GZIPInputStream(FileInputStream(inputFile)).bufferedReader().use { reader ->
         var insideString = false
         var tempFraud = false
-        val tempVector = ByteArray(DIMENSIONS)
         var hasVector = false
         
         val keyBuf = CharArray(64)
@@ -42,8 +37,8 @@ fun main() {
                 tempFraud = false
             } else if (char == '}') {
                 if (hasVector) {
-                    System.arraycopy(tempVector, 0, vectors, count * DIMENSIONS, DIMENSIONS)
                     labels[count] = if (tempFraud) 1 else 0
+                    indices[count] = count
                     count++
                     hasVector = false
                 }
@@ -71,8 +66,8 @@ fun main() {
                         }
                         if (c.toChar() == '}') {
                             if (hasVector) {
-                                System.arraycopy(tempVector, 0, vectors, count * DIMENSIONS, DIMENSIONS)
                                 labels[count] = if (tempFraud) 1 else 0
+                                indices[count] = count
                                 count++
                                 hasVector = false
                             }
@@ -97,7 +92,7 @@ fun main() {
                                 if (inNumber) {
                                     var f = intPart.toFloat() + fracPart
                                     if (isNeg) f = -f
-                                    tempVector[dim] = if (f < 0f) -128 else (f * 127f).roundToInt().toByte()
+                                    vectorsShort[count * DIMENSIONS + dim] = Math.round(f * 10000.0).toInt().toShort()
                                     dim++
                                     isNeg = false; intPart = 0; fracPart = 0f; divisor = 10f; inNumber = false; inFrac = false
                                 }
@@ -122,7 +117,7 @@ fun main() {
                         if (inNumber && dim < DIMENSIONS) {
                             var f = intPart.toFloat() + fracPart
                             if (isNeg) f = -f
-                            tempVector[dim] = if (f < 0f) -128 else (f * 127f).roundToInt().toByte()
+                            vectorsShort[count * DIMENSIONS + dim] = Math.round(f * 10000.0).toInt().toShort()
                         }
                         hasVector = true
                     }
@@ -132,81 +127,118 @@ fun main() {
         }
     }
 
-    val centroids = ByteArray(NUM_CLUSTERS * DIMENSIONS)
-    val clusterAssignments = IntArray(count)
-    val clusterSizes = IntArray(NUM_CLUSTERS)
-    val newCentroidsSum = IntArray(NUM_CLUSTERS * DIMENSIONS)
-    
-    for (i in 0 until NUM_CLUSTERS) {
-        val randIdx = Random(42).nextInt(count)
-        System.arraycopy(vectors, randIdx * DIMENSIONS, centroids, i * DIMENSIONS, DIMENSIONS)
-    }
-    
-    for (iteration in 0 until 20) {
-        IntStream.range(0, count).parallel().forEach { i ->
-            var bestCluster = 0
-            var minDist = Int.MAX_VALUE
-            val vOffset = i * DIMENSIONS
+    val treeLeft = IntArray(count) { -1 }
+    val treeRight = IntArray(count) { -1 }
+    val treeSplitDim = ByteArray(count)
+    val treeNodeId = IntArray(count)
+    var nextNode = 0
+
+    val random = Random(42)
+
+    fun quickselect(from: Int, to: Int, target: Int, splitDim: Int) {
+        var l = from
+        var r = to
+        while (r - l > 1) {
+            val pivotIdx = l + random.nextInt(r - l)
+            val pivotVal = vectorsShort[indices[pivotIdx] * 14 + splitDim]
             
-            for (c in 0 until NUM_CLUSTERS) {
-                val cOffset = c * DIMENSIONS
-                var dist = 0
-                for (d in 0 until DIMENSIONS) {
-                    val diff = vectors[vOffset + d].toInt() - centroids[cOffset + d].toInt()
-                    dist += diff * diff
-                }
-                if (dist < minDist) {
-                    minDist = dist
-                    bestCluster = c
-                }
-            }
-            clusterAssignments[i] = bestCluster
-        }
-        
-        clusterSizes.fill(0)
-        newCentroidsSum.fill(0)
-        
-        for (i in 0 until count) {
-            val c = clusterAssignments[i]
-            clusterSizes[c]++
-            val vOffset = i * DIMENSIONS
-            val cOffset = c * DIMENSIONS
-            for (d in 0 until DIMENSIONS) {
-                newCentroidsSum[cOffset + d] += vectors[vOffset + d].toInt()
-            }
-        }
-        
-        for (c in 0 until NUM_CLUSTERS) {
-            val size = clusterSizes[c]
-            if (size > 0) {
-                val cOffset = c * DIMENSIONS
-                for (d in 0 until DIMENSIONS) {
-                    centroids[cOffset + d] = (newCentroidsSum[cOffset + d] / size).toByte()
+            var less = l
+            var cur = l
+            var greater = r
+            
+            while (cur < greater) {
+                val v = vectorsShort[indices[cur] * 14 + splitDim]
+                if (v < pivotVal) {
+                    val t = indices[less]
+                    indices[less] = indices[cur]
+                    indices[cur] = t
+                    less++
+                    cur++
+                } else if (v > pivotVal) {
+                    greater--
+                    val t = indices[greater]
+                    indices[greater] = indices[cur]
+                    indices[cur] = t
+                } else {
+                    cur++
                 }
             }
+            
+            if (target < less) r = less
+            else if (target >= greater) l = greater
+            else return
         }
     }
-    
-    val buffer = ByteBuffer.allocate(4 + NUM_CLUSTERS * (DIMENSIONS + 4) + count * VECTOR_SIZE_BYTES)
+
+    fun chooseSplitDim(from: Int, to: Int): Int {
+        val sz = to - from
+        val step = Math.max(1, sz / 256)
+        var bestDim = 0
+        var maxRange = -1.0f
+        
+        for (d in 0 until 14) {
+            var min = Float.MAX_VALUE
+            var max = -Float.MAX_VALUE
+            var i = from
+            while (i < to) {
+                val v = vectorsShort[indices[i] * 14 + d].toFloat()
+                if (v < min) min = v
+                if (v > max) max = v
+                i += step
+            }
+            val range = max - min
+            if (range > maxRange) {
+                maxRange = range
+                bestDim = d
+            }
+        }
+        return bestDim
+    }
+
+    fun buildKD(from: Int, to: Int, depth: Int): Int {
+        if (from >= to) return -1
+        
+        val splitDim = chooseSplitDim(from, to)
+        
+        val mid = from + (to - from) / 2
+        quickselect(from, to, mid, splitDim)
+        
+        val nodeIdx = nextNode++
+        treeSplitDim[nodeIdx] = splitDim.toByte()
+        treeNodeId[nodeIdx] = indices[mid]
+        
+        treeLeft[nodeIdx] = buildKD(from, mid, depth + 1)
+        treeRight[nodeIdx] = buildKD(mid + 1, to, depth + 1)
+        
+        return nodeIdx
+    }
+
+    buildKD(0, count, 0)
+
+    val channel = FileOutputStream(outputFile).channel
+    val buffer = ByteBuffer.allocateDirect(1024 * 1024 * 16)
     buffer.order(ByteOrder.LITTLE_ENDIAN)
-    
-    buffer.putInt(NUM_CLUSTERS)
-    
-    for (c in 0 until NUM_CLUSTERS) {
-        buffer.put(centroids, c * DIMENSIONS, DIMENSIONS)
-        buffer.putInt(clusterSizes[c])
-    }
-    
-    for (c in 0 until NUM_CLUSTERS) {
-        for (i in 0 until count) {
-            if (clusterAssignments[i] == c) {
-                buffer.put(vectors, i * DIMENSIONS, DIMENSIONS)
-                buffer.put(labels[i])
-            }
+
+    buffer.putInt(nextNode)
+
+    for (i in 0 until nextNode) {
+        if (buffer.remaining() < 42) {
+            buffer.flip()
+            while (buffer.hasRemaining()) channel.write(buffer)
+            buffer.clear()
+        }
+        buffer.putInt(treeLeft[i])
+        buffer.putInt(treeRight[i])
+        buffer.put(treeSplitDim[i])
+        val origId = treeNodeId[i]
+        buffer.put(labels[origId])
+        buffer.putInt(origId)
+        val vecOff = origId * 14
+        for (d in 0 until 14) {
+            buffer.putShort(vectorsShort[vecOff + d])
         }
     }
-    
-    BufferedOutputStream(FileOutputStream(outputFile)).use { out ->
-        out.write(buffer.array(), 0, buffer.position())
-    }
+    buffer.flip()
+    while (buffer.hasRemaining()) channel.write(buffer)
+    channel.close()
 }

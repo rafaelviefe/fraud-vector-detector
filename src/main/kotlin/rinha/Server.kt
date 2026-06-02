@@ -9,17 +9,16 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
-import kotlin.math.roundToInt
 
 object Engine {
-    const val VECTOR_SIZE = 15
-    val mccRiskMap = IntArray(10000) { 64 }
+    lateinit var treeLeft: IntArray
+    lateinit var treeRight: IntArray
+    lateinit var treeSplitDim: ByteArray
+    lateinit var treeLabel: ByteArray
+    lateinit var treeOrigId: IntArray
+    lateinit var treeVectors: ShortArray
 
-    var totalClusters = 0
-    lateinit var indexData: ByteArray
-    lateinit var centroids: ByteArray
-    lateinit var clusterSizes: IntArray
-    lateinit var clusterOffsets: IntArray
+    val mccRiskMap = DoubleArray(10000) { 0.5 }
 
     val TX_KEY = "\"transaction\"".toByteArray(Charsets.US_ASCII)
     val CUST_KEY = "\"customer\"".toByteArray(Charsets.US_ASCII)
@@ -61,41 +60,36 @@ object Engine {
         val pattern = "\"(\\d{4})\":\\s*([0-9.]+)".toRegex()
         pattern.findAll(content).forEach { matchResult ->
             val mcc = matchResult.groupValues[1].toInt()
-            val risk = matchResult.groupValues[2].toFloat()
-            mccRiskMap[mcc] = (risk * 127f).roundToInt()
+            val risk = matchResult.groupValues[2].toDouble()
+            mccRiskMap[mcc] = risk
         }
     }
 
     fun initData() {
         loadMccRisk()
-        val channel = RandomAccessFile("resources/index.bin", "r").channel
-        val fileSize = channel.size().toInt()
+        val file = File("resources/index.bin")
+        if (!file.exists()) return
+        val channel = RandomAccessFile(file, "r").channel
         val mapped = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size())
         mapped.order(ByteOrder.LITTLE_ENDIAN)
 
-        indexData = ByteArray(fileSize)
-        mapped.get(indexData)
+        val count = mapped.getInt()
+        treeLeft = IntArray(count)
+        treeRight = IntArray(count)
+        treeSplitDim = ByteArray(count)
+        treeLabel = ByteArray(count)
+        treeOrigId = IntArray(count)
+        treeVectors = ShortArray(count * 14)
 
-        var offset = 0
-        totalClusters = ByteBuffer.wrap(indexData, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
-        offset += 4
-
-        centroids = ByteArray(totalClusters * 14)
-        clusterSizes = IntArray(totalClusters)
-        clusterOffsets = IntArray(totalClusters)
-
-        for (c in 0 until totalClusters) {
-            System.arraycopy(indexData, offset, centroids, c * 14, 14)
-            offset += 14
-            val size = ByteBuffer.wrap(indexData, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            offset += 4
-            clusterSizes[c] = size
-        }
-
-        var currentOffset = offset
-        for (c in 0 until totalClusters) {
-            clusterOffsets[c] = currentOffset
-            currentOffset += clusterSizes[c] * VECTOR_SIZE
+        for (i in 0 until count) {
+            treeLeft[i] = mapped.getInt()
+            treeRight[i] = mapped.getInt()
+            treeSplitDim[i] = mapped.get()
+            treeLabel[i] = mapped.get()
+            treeOrigId[i] = mapped.getInt()
+            for (d in 0 until 14) {
+                treeVectors[i * 14 + d] = mapped.getShort()
+            }
         }
     }
 
@@ -154,10 +148,16 @@ object Engine {
         return json[i] == 't'.code.toByte()
     }
 
-    fun clampToByte(value: Double): Byte {
-        val clamped = if (value != value) 0.0 else if (value < 0.0) 0.0 else if (value > 1.0) 1.0 else value
-        return (clamped * 127.0 + 0.5).toInt().toByte()
+    fun clamp(value: Double): Double {
+        return if (value != value) 0.0 else if (value < 0.0) 0.0 else if (value > 1.0) 1.0 else value
     }
+
+    fun clampShort(x: Double): Short {
+        val c = if (x < 0.0) x else clamp(x)
+        return Math.round(c * 10000.0).toInt().toShort()
+    }
+
+    fun round4(x: Double): Double = Math.round(x * 10000.0) / 10000.0
 
     fun getDayOfWeek(year: Int, month: Int, day: Int): Int {
         var y = year
@@ -180,7 +180,7 @@ object Engine {
         return days * 1440L + hour * 60L + min
     }
 
-    fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vector: ByteArray) {
+    fun vectorizePayload(json: ByteArray, start: Int, limit: Int, vShort: ShortArray, vDouble: DoubleArray) {
         val txBlock = find(json, TX_KEY, start, limit)
         val cBlock = find(json, CUST_KEY, start, limit)
         val mBlock = find(json, MERCH_KEY, start, limit)
@@ -236,15 +236,27 @@ object Engine {
         val lBraceIdx = find(json, BRACE_KEY, lBlock, limit)
         val isLastTxNull = (lNullIdx != -1 && (lBraceIdx == -1 || lNullIdx < lBraceIdx))
 
-        vector[0] = clampToByte(txAmount / 10000.0)
-        vector[1] = clampToByte(txInstalls / 12.0)
-        vector[2] = clampToByte(if (cAvgAmount > 0.0) (txAmount / cAvgAmount) / 10.0 else 0.0)
-        vector[3] = clampToByte(reqH / 23.0)
-        vector[4] = clampToByte(reqDow / 6.0)
+        vDouble[0] = round4(clamp(txAmount / 10000.0))
+        vShort[0] = clampShort(txAmount / 10000.0)
+        
+        vDouble[1] = round4(clamp(txInstalls / 12.0))
+        vShort[1] = clampShort(txInstalls / 12.0)
+        
+        val c2 = if (cAvgAmount > 0.0) (txAmount / cAvgAmount) / 10.0 else 0.0
+        vDouble[2] = round4(clamp(c2))
+        vShort[2] = clampShort(c2)
+        
+        vDouble[3] = round4(clamp(reqH / 23.0))
+        vShort[3] = clampShort(reqH / 23.0)
+        
+        vDouble[4] = round4(clamp(reqDow / 6.0))
+        vShort[4] = clampShort(reqDow / 6.0)
 
         if (isLastTxNull) {
-            vector[5] = -128
-            vector[6] = -128
+            vDouble[5] = round4(-1.0)
+            vShort[5] = -10000
+            vDouble[6] = round4(-1.0)
+            vShort[6] = -10000
         } else {
             val lTimeIdx = find(json, TIMESTAMP_KEY, lBlock, limit)
             var iL = lTimeIdx + TIMESTAMP_KEY.size
@@ -259,14 +271,23 @@ object Engine {
             val lEpoch = getEpochMinutes(lY, lM, lD, lH, lMin)
             val minutesDiff = (reqEpoch - lEpoch).toDouble()
 
-            vector[5] = clampToByte(minutesDiff / 1440.0)
-            vector[6] = clampToByte(lKmStr / 1000.0)
+            vDouble[5] = round4(clamp(minutesDiff / 1440.0))
+            vShort[5] = clampShort(minutesDiff / 1440.0)
+            vDouble[6] = round4(clamp(lKmStr / 1000.0))
+            vShort[6] = clampShort(lKmStr / 1000.0)
         }
 
-        vector[7] = clampToByte(tKmHome / 1000.0)
-        vector[8] = clampToByte(cTxCount / 20.0)
-        vector[9] = if (tOnline) 127.toByte() else 0.toByte()
-        vector[10] = if (tCard) 127.toByte() else 0.toByte()
+        vDouble[7] = round4(clamp(tKmHome / 1000.0))
+        vShort[7] = clampShort(tKmHome / 1000.0)
+        
+        vDouble[8] = round4(clamp(cTxCount / 20.0))
+        vShort[8] = clampShort(cTxCount / 20.0)
+        
+        vDouble[9] = round4(if (tOnline) 1.0 else 0.0)
+        vShort[9] = if (tOnline) 10000.toShort() else 0.toShort()
+        
+        vDouble[10] = round4(if (tCard) 1.0 else 0.0)
+        vShort[10] = if (tCard) 10000.toShort() else 0.toShort()
 
         var unknown = true
         val kIdx = find(json, KNOWN_MERCH_KEY, cBlock, limit)
@@ -292,130 +313,191 @@ object Engine {
                 }
             }
         }
-        vector[11] = if (unknown) 127.toByte() else 0.toByte()
-        vector[12] = if (mMcc in mccRiskMap.indices) mccRiskMap[mMcc].toByte() else 64.toByte()
-        vector[13] = clampToByte(mAvgAmount / 10000.0)
+        
+        vDouble[11] = round4(if (unknown) 1.0 else 0.0)
+        vShort[11] = if (unknown) 10000.toShort() else 0.toShort()
+        
+        val mRisk = if (mMcc in mccRiskMap.indices) mccRiskMap[mMcc] else 0.5
+        vDouble[12] = round4(clamp(mRisk))
+        vShort[12] = clampShort(mRisk)
+        
+        vDouble[13] = round4(clamp(mAvgAmount / 10000.0))
+        vShort[13] = clampShort(mAvgAmount / 10000.0)
     }
 }
 
 class RequestProcessor {
-    val query = ByteArray(14)
-    private val clusterDists = LongArray(Engine.totalClusters)
-
-    private var t1D = Int.MAX_VALUE; private var t1L = 0
-    private var t2D = Int.MAX_VALUE; private var t2L = 0
-    private var t3D = Int.MAX_VALUE; private var t3L = 0
-    private var t4D = Int.MAX_VALUE; private var t4L = 0
-    private var t5D = Int.MAX_VALUE; private var t5L = 0
+    val queryShort = ShortArray(14)
+    val queryDouble = DoubleArray(14)
+    
+    val topDist = LongArray(5)
+    val topNode = IntArray(5)
+    
+    val poolNode = IntArray(50000)
+    var poolSize = 0
+    var visits = 0
+    
+    val exactDists = DoubleArray(5)
+    val exactOrig = IntArray(5)
+    val exactLabel = ByteArray(5)
 
     fun processPayload(json: ByteArray, start: Int, limit: Int): Int {
-        Engine.vectorizePayload(json, start, limit, query)
-
-        t1D = Int.MAX_VALUE; t1L = 0
-        t2D = Int.MAX_VALUE; t2L = 0
-        t3D = Int.MAX_VALUE; t3L = 0
-        t4D = Int.MAX_VALUE; t4L = 0
-        t5D = Int.MAX_VALUE; t5L = 0
-
-        val q0 = query[0].toInt(); val q1 = query[1].toInt()
-        val q2 = query[2].toInt(); val q3 = query[3].toInt()
-        val q4 = query[4].toInt(); val q5 = query[5].toInt()
-        val q6 = query[6].toInt(); val q7 = query[7].toInt()
-        val q8 = query[8].toInt(); val q9 = query[9].toInt()
-        val q10 = query[10].toInt(); val q11 = query[11].toInt()
-        val q12 = query[12].toInt(); val q13 = query[13].toInt()
-
-        for (c in 0 until Engine.totalClusters) {
-            var dist = 0
-            val cOff = c * 14
-            
-            var d = q0 - Engine.centroids[cOff].toInt(); dist += d * d
-            d = q1 - Engine.centroids[cOff + 1].toInt(); dist += d * d
-            d = q2 - Engine.centroids[cOff + 2].toInt(); dist += d * d
-            d = q3 - Engine.centroids[cOff + 3].toInt(); dist += d * d
-            d = q4 - Engine.centroids[cOff + 4].toInt(); dist += d * d
-            d = q5 - Engine.centroids[cOff + 5].toInt(); dist += d * d
-            d = q6 - Engine.centroids[cOff + 6].toInt(); dist += d * d
-            d = q7 - Engine.centroids[cOff + 7].toInt(); dist += d * d
-            d = q8 - Engine.centroids[cOff + 8].toInt(); dist += d * d
-            d = q9 - Engine.centroids[cOff + 9].toInt(); dist += d * d
-            d = q10 - Engine.centroids[cOff + 10].toInt(); dist += d * d
-            d = q11 - Engine.centroids[cOff + 11].toInt(); dist += d * d
-            d = q12 - Engine.centroids[cOff + 12].toInt(); dist += d * d
-            d = q13 - Engine.centroids[cOff + 13].toInt(); dist += d * d
-
-            clusterDists[c] = (dist.toLong() shl 32) or c.toLong()
+        Engine.vectorizePayload(json, start, limit, queryShort, queryDouble)
+        
+        for (i in 0 until 5) {
+            topDist[i] = Long.MAX_VALUE
+            topNode[i] = -1
+            exactDists[i] = Double.MAX_VALUE
+            exactOrig[i] = Int.MAX_VALUE
+            exactLabel[i] = 0
         }
-
-        java.util.Arrays.sort(clusterDists)
-
-        val searchLimit = if (Engine.totalClusters < 256) Engine.totalClusters else 256
-        for (i in 0 until searchLimit) {
-            scanCluster(clusterDists[i].toInt(), q0, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13)
-        }
-
-        return t1L + t2L + t3L + t4L + t5L
-    }
-
-    private fun scanCluster(c: Int, q0: Int, q1: Int, q2: Int, q3: Int, q4: Int, q5: Int, q6: Int, q7: Int, q8: Int, q9: Int, q10: Int, q11: Int, q12: Int, q13: Int) {
-        val size = Engine.clusterSizes[c]
-        var vOff = Engine.clusterOffsets[c]
-        val idxData = Engine.indexData
-        for (i in 0 until size) {
-            var dist = 0
+        poolSize = 0
+        visits = 0
+        
+        primeKD()
+        searchKD(0)
+        
+        for (i in 0 until poolSize) {
+            val node = poolNode[i]
+            var dSq = 0.0
+            val off = node * 14
+            for (d in 0 until 14) {
+                val a = queryDouble[d]
+                val b = Engine.treeVectors[off + d].toDouble() / 10000.0
+                val diff = a - b
+                dSq += diff * diff
+            }
+            val origId = Engine.treeOrigId[node]
+            val label = Engine.treeLabel[node]
             
-            var d = q0 - idxData[vOff].toInt(); dist += d * d
-            d = q1 - idxData[vOff + 1].toInt(); dist += d * d
-            d = q2 - idxData[vOff + 2].toInt(); dist += d * d
-            d = q3 - idxData[vOff + 3].toInt(); dist += d * d
+            var dup = false
+            for (k in 0 until 5) {
+                if (exactOrig[k] == origId) { dup = true; break }
+            }
+            if (dup) continue
             
-            if (dist < t5D) {
-                d = q4 - idxData[vOff + 4].toInt(); dist += d * d
-                d = q5 - idxData[vOff + 5].toInt(); dist += d * d
-                d = q6 - idxData[vOff + 6].toInt(); dist += d * d
-                d = q7 - idxData[vOff + 7].toInt(); dist += d * d
-                
-                if (dist < t5D) {
-                    d = q8 - idxData[vOff + 8].toInt(); dist += d * d
-                    d = q9 - idxData[vOff + 9].toInt(); dist += d * d
-                    d = q10 - idxData[vOff + 10].toInt(); dist += d * d
-                    d = q11 - idxData[vOff + 11].toInt(); dist += d * d
-                    d = q12 - idxData[vOff + 12].toInt(); dist += d * d
-                    d = q13 - idxData[vOff + 13].toInt(); dist += d * d
-                    
-                    if (dist < t5D) {
-                        val label = idxData[vOff + 14].toInt()
-                        if (dist < t4D) {
-                            if (dist < t3D) {
-                                if (dist < t2D) {
-                                    if (dist < t1D) {
-                                        t5D = t4D; t5L = t4L
-                                        t4D = t3D; t4L = t3L
-                                        t3D = t2D; t3L = t2L
-                                        t2D = t1D; t2L = t1L
-                                        t1D = dist; t1L = label
-                                    } else {
-                                        t5D = t4D; t5L = t4L
-                                        t4D = t3D; t4L = t3L
-                                        t3D = t2D; t3L = t2L
-                                        t2D = dist; t2L = label
-                                    }
-                                } else {
-                                    t5D = t4D; t5L = t4L
-                                    t4D = t3D; t4L = t3L
-                                    t3D = dist; t3L = label
-                                }
-                            } else {
-                                t5D = t4D; t5L = t4L
-                                t4D = dist; t4L = label
-                            }
-                        } else {
-                            t5D = dist; t5L = label
-                        }
+            for (k in 0 until 5) {
+                if (dSq < exactDists[k] || (dSq == exactDists[k] && origId < exactOrig[k])) {
+                    for (j in 4 downTo k + 1) {
+                        exactDists[j] = exactDists[j - 1]
+                        exactOrig[j] = exactOrig[j - 1]
+                        exactLabel[j] = exactLabel[j - 1]
                     }
+                    exactDists[k] = dSq
+                    exactOrig[k] = origId
+                    exactLabel[k] = label
+                    break
                 }
             }
-            vOff += 15
+        }
+        
+        var fraudCount = 0
+        for (i in 0 until 5) {
+            if (exactLabel[i].toInt() == 1) fraudCount++
+        }
+        return fraudCount
+    }
+
+    private fun insertTop(node: Int, dist: Long) {
+        for (i in 0 until 5) {
+            if (dist < topDist[i]) {
+                for (j in 4 downTo i + 1) {
+                    topDist[j] = topDist[j - 1]
+                    topNode[j] = topNode[j - 1]
+                }
+                topDist[i] = dist
+                topNode[i] = node
+                break
+            }
+        }
+    }
+
+    private fun evalNode(node: Int) {
+        visits++
+        var distSq = 0L
+        val off = node * 14
+        for (d in 0 until 14) {
+            val diff = (queryShort[d] - Engine.treeVectors[off + d]).toLong()
+            distSq += diff * diff
+        }
+        
+        if (topDist[4] == Long.MAX_VALUE || distSq <= topDist[4]) {
+            insertTop(node, distSq)
+            if (poolSize < poolNode.size) {
+                poolNode[poolSize++] = node
+            }
+        }
+    }
+
+    private fun primeKD() {
+        var bestFar = -1
+        var bestFarDeltaSq = Long.MAX_VALUE
+        
+        var node = 0
+        while (node != -1) {
+            evalNode(node)
+            
+            val splitDim = Engine.treeSplitDim[node].toInt()
+            val splitVal = Engine.treeVectors[node * 14 + splitDim].toInt()
+            val queryVal = queryShort[splitDim].toInt()
+            
+            val delta = (queryVal - splitVal).toLong()
+            val deltaSq = delta * delta
+            
+            val left = Engine.treeLeft[node]
+            val right = Engine.treeRight[node]
+            
+            val near = if (delta < 0) left else right
+            val far = if (delta < 0) right else left
+            
+            if (far != -1 && deltaSq < bestFarDeltaSq) {
+                bestFarDeltaSq = deltaSq
+                bestFar = far
+            }
+            node = near
+        }
+        
+        if (bestFar != -1) {
+            node = bestFar
+            while (node != -1) {
+                evalNode(node)
+                
+                val splitDim = Engine.treeSplitDim[node].toInt()
+                val splitVal = Engine.treeVectors[node * 14 + splitDim].toInt()
+                val queryVal = queryShort[splitDim].toInt()
+                
+                val delta = (queryVal - splitVal).toLong()
+                
+                val left = Engine.treeLeft[node]
+                val right = Engine.treeRight[node]
+                
+                node = if (delta < 0) left else right
+            }
+        }
+    }
+
+    private fun searchKD(node: Int) {
+        if (node == -1) return
+        if (visits > 25000) return
+        
+        evalNode(node)
+        
+        val splitDim = Engine.treeSplitDim[node].toInt()
+        val splitVal = Engine.treeVectors[node * 14 + splitDim].toInt()
+        val queryVal = queryShort[splitDim].toInt()
+        
+        val delta = (queryVal - splitVal).toLong()
+        
+        val left = Engine.treeLeft[node]
+        val right = Engine.treeRight[node]
+        
+        val near = if (delta < 0) left else right
+        val far = if (delta < 0) right else left
+        
+        searchKD(near)
+        
+        if (topDist[4] == Long.MAX_VALUE || (delta * delta) <= topDist[4]) {
+            searchKD(far)
         }
     }
 }
@@ -515,7 +597,7 @@ fun main() {
     val dummyPayload2 = """{"id": "tx-2","transaction": {"amount": 100.0,"installments": 1,"requested_at": "2026-03-11T20:23:35Z"},"customer": {"avg_amount": 100.0,"tx_count_24h": 1,"known_merchants": ["M2"]},"merchant": {"id": "M1","mcc": "1234","avg_amount": 100.0},"terminal": {"is_online": false,"card_present": true,"km_from_home": 1.0},"last_transaction": {"timestamp": "2026-03-11T14:58:35Z","km_from_current": 18.8}}""".toByteArray(Charsets.US_ASCII)
     
     val processor = RequestProcessor()
-    for (i in 0 until 50) {
+    for (i in 0 until 500) {
         processor.processPayload(dummyPayload1, 0, dummyPayload1.size)
         processor.processPayload(dummyPayload2, 0, dummyPayload2.size)
     }
