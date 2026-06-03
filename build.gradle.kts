@@ -33,9 +33,6 @@ tasks.register<JavaExec>("buildIndex") {
 }
 
 graalvmNative {
-    agent {
-        defaultMode.set("standard")
-    }
     binaries {
         named("main") {
             imageName.set("server")
@@ -43,9 +40,7 @@ graalvmNative {
             buildArgs.addAll(
                 "-O3",
                 "-march=x86-64-v3",
-                "--gc=epsilon",
                 "--no-fallback",
-                "--static",
                 "-H:+ReportExceptionStackTraces",
                 "-H:+UnlockExperimentalVMOptions"
             )

@@ -27,9 +27,7 @@ services:
           memory: "16M"
 
   api1:
-    build: 
-      context: .
-      dockerfile: Dockerfile
+    image: rafaelviefe/fraud-api:latest
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api1.sock
@@ -53,9 +51,7 @@ services:
           memory: "167M"
 
   api2:
-    build: 
-      context: .
-      dockerfile: Dockerfile
+    image: rafaelviefe/fraud-api:latest
     platform: linux/amd64
     environment:
       - SOCKET_PATH=/tmp/api2.sock

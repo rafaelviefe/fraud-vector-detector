@@ -4,6 +4,7 @@ COPY . .
 RUN microdnf install -y findutils
 RUN chmod +x gradlew
 RUN ./gradlew nativeCompile --no-daemon
+
 FROM oraclelinux:9-slim
 WORKDIR /app
 COPY --from=builder /app/build/native/nativeCompile/server /app/server
